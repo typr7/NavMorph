@@ -221,3 +221,83 @@ def test_build_candidate_set_record_returns_grouped_record():
     assert record.candidate_set_id == "scene-1:ep-1:3"
     assert len(record.candidates) == 1
     assert record.candidates[0].candidate_index == 0
+import ast
+from copy import deepcopy
+
+
+class FakeAgentState:
+    def __init__(self, position, rotation):
+        self.position = position
+        self.rotation = rotation
+
+
+class FakeSim:
+    def __init__(self):
+        self.position = [1.0, 2.0, 3.0]
+        self.rotation = {"yaw": 0.5}
+
+    def get_agent_state(self):
+        return FakeAgentState(position=self.position, rotation=self.rotation)
+
+    def set_agent_state(self, position, rotation):
+        self.position = list(position)
+        self.rotation = deepcopy(rotation)
+
+
+
+def test_choose_probe_indices_keeps_top_semantic_and_one_hard_negative():
+    probing = _load_stage2s_module("probing")
+    semantic_scores = [9.0, 8.8, 7.5, 1.0, 0.5]
+    indices = probing.choose_probe_indices(semantic_scores, probe_width=4)
+    assert 0 in indices
+    assert 1 in indices
+    assert 4 in indices
+    assert len(indices) == 4
+
+
+
+def test_pack_and_restore_sim_snapshot_with_fake_sim():
+    probing = _load_stage2s_module("probing")
+    sim = FakeSim()
+    snapshot = probing.pack_sim_snapshot(sim)
+    sim.set_agent_state([9.0, 9.0, 9.0], {"yaw": 9.0})
+    probing.restore_sim_snapshot(sim, snapshot)
+    restored = sim.get_agent_state()
+    assert restored.position == [1.0, 2.0, 3.0]
+    assert restored.rotation == {"yaw": 0.5}
+
+
+
+def test_summarize_probe_outcome_marks_blocking_when_short_motion():
+    probing = _load_stage2s_module("probing")
+    outcome = probing.summarize_probe_outcome(
+        intended_forward=1.0,
+        executed_forward=0.2,
+        start_goal_distance=5.0,
+        end_goal_distance=4.9,
+        tolerance_ratio=0.8,
+    )
+    assert outcome.blocking_failure == 1.0
+    assert outcome.executable == 0.0
+    assert outcome.reachable_ratio == 0.2
+    assert outcome.goal_progress_delta == 0.1
+
+
+
+def test_environments_exposes_stage2s_probe_methods():
+    tree = ast.parse(Path("vlnce_baselines/common/environments.py").read_text())
+    methods = set()
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "VLNCEDaggerEnv":
+            methods = {child.name for child in node.body if isinstance(child, ast.FunctionDef)}
+            break
+    assert "get_agent_pose_snapshot" in methods
+    assert "restore_agent_pose_snapshot" in methods
+    assert "probe_candidate_action" in methods
+
+
+
+def test_ss_trainer_etp_exposes_stage2s_log_only_hooks():
+    trainer_text = Path("vlnce_baselines/ss_trainer_ETP.py").read_text()
+    assert "def _stage2s_log_only_enabled" in trainer_text
+    assert "def _stage2s_probe_candidates" in trainer_text

@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional, Tuple, List, Union
+from copy import deepcopy
 import math
 import random
 import habitat
@@ -13,6 +14,11 @@ from habitat_extensions.utils import generate_video, heading_from_quaternion, na
 from scipy.spatial.transform import Rotation as R
 import cv2
 import os
+from vlnce_baselines.stage2s.probing import (
+    pack_sim_snapshot,
+    restore_sim_snapshot,
+    summarize_probe_outcome,
+)
 
 
 def quat_from_heading(heading, elevation=0):
@@ -106,6 +112,12 @@ class VLNCEDaggerEnv(habitat.RLEnv):
         ori = np.array([*(agent_state.rotation.imag), agent_state.rotation.real])
         return (pos, ori)
 
+    def get_agent_pose_snapshot(self):
+        return pack_sim_snapshot(self._env.sim)
+
+    def restore_agent_pose_snapshot(self, snapshot):
+        restore_sim_snapshot(self._env.sim, snapshot)
+
     def get_observation_at(self,
         source_position: List[float],
         source_rotation: List[Union[int, np.float64]],
@@ -153,6 +165,53 @@ class VLNCEDaggerEnv(habitat.RLEnv):
         sim.set_agent_state(init_state.position, init_state.rotation)
         
         return post_pose
+
+    def probe_candidate_action(
+        self,
+        forward: float,
+        angle: float,
+        goal_position: Optional[List[float]] = None,
+        executable_ratio_threshold: float = 0.8,
+    ) -> Dict[str, Any]:
+        sim = self._env.sim
+        snapshot = self.get_agent_pose_snapshot()
+        init_state = sim.get_agent_state()
+        forward_action = HabitatSimActions.MOVE_FORWARD
+        init_forward = sim.get_agent(0).agent_config.action_space[forward_action].actuation.amount
+
+        if goal_position is None:
+            goal_position = self._env.current_episode.goals[0].position
+        start_goal_distance = sim.geodesic_distance(init_state.position, goal_position)
+
+        theta = np.arctan2(init_state.rotation.imag[1], init_state.rotation.real) + angle / 2
+        rotation = np.quaternion(np.cos(theta), 0, np.sin(theta), 0)
+        sim.set_agent_state(init_state.position, rotation)
+
+        ksteps = int(forward // init_forward)
+        prev_pos = deepcopy(init_state.position)
+        executed_forward = 0.0
+        for _ in range(ksteps):
+            sim.step_without_obs(forward_action)
+            pos = sim.get_agent_state().position
+            executed_forward += float(np.linalg.norm(prev_pos - pos))
+            prev_pos = deepcopy(pos)
+
+        post_state = sim.get_agent_state()
+        end_goal_distance = sim.geodesic_distance(post_state.position, goal_position)
+        outcome = summarize_probe_outcome(
+            intended_forward=forward,
+            executed_forward=executed_forward,
+            start_goal_distance=start_goal_distance,
+            end_goal_distance=end_goal_distance,
+            tolerance_ratio=executable_ratio_threshold,
+        )
+        result = {
+            "final_position": post_state.position.tolist(),
+            "final_rotation": [*(post_state.rotation.imag), post_state.rotation.real],
+            "outcome": outcome.to_dict(),
+        }
+        self.restore_agent_pose_snapshot(snapshot)
+        return result
 
     def current_dist_to_refpath(self, path):
         sim = self._env.sim

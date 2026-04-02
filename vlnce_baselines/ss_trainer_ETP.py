@@ -77,6 +77,7 @@ import sys
 from utils_p.prompt import Prompt
 from utils_p.memory import Memory, Memory_vft
 from utils_p.losses import RegressionLoss, KLLoss
+from vlnce_baselines.stage2s.probing import choose_probe_indices
 
 
 from PIL import Image
@@ -103,6 +104,43 @@ class RLTrainer(BaseVLNCETrainer):
         self.imagine_T = config.imagine_T
         self.problistic_loss = KLLoss(alpha=0.5)
         self.action_loss = RegressionLoss(norm=2)
+
+    def _stage2s_log_only_enabled(self):
+        return (
+            hasattr(self.config, "STAGE2S")
+            and self.config.STAGE2S.ENABLED
+            and self.config.STAGE2S.MODE == "log_only"
+        )
+
+    def _stage2s_probe_candidates(self, wp_outputs):
+        if not self._stage2s_log_only_enabled():
+            return None
+
+        probe_width = int(self.config.STAGE2S.COUNTERFACTUAL.PROBE_WIDTH)
+        probe_records = []
+        for env_index in range(self.envs.num_envs):
+            candidate_count = len(wp_outputs['cand_distances'][env_index])
+            semantic_rank_proxy = [
+                float(candidate_count - candidate_index)
+                for candidate_index in range(candidate_count)
+            ]
+            probe_indices = choose_probe_indices(
+                semantic_rank_proxy,
+                probe_width=probe_width,
+            )
+            env_records = []
+            for candidate_index in probe_indices:
+                angle = wp_outputs['cand_angles'][env_index][candidate_index]
+                distance = wp_outputs['cand_distances'][env_index][candidate_index]
+                probe_result = self.envs.call_at(
+                    env_index,
+                    "probe_candidate_action",
+                    {"angle": angle, "forward": distance},
+                )
+                probe_result["candidate_index"] = candidate_index
+                env_records.append(probe_result)
+            probe_records.append(env_records)
+        return probe_records
 
 
     def _make_dirs(self):
@@ -1335,6 +1373,7 @@ class RLTrainer(BaseVLNCETrainer):
                     observations = batch,
                     in_train = (mode == 'train' and self.config.IL.waypoint_aug),
                 )
+                stage2s_probe_records = self._stage2s_probe_candidates(wp_outputs)
 
             
             prev_position = torch.tensor(origin_position)
