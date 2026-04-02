@@ -15,7 +15,6 @@ from vlnce_baselines.config.default import get_config
 #     evaluate_agent,
 #     nonlearning_inference,
 # )
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 
 def main():

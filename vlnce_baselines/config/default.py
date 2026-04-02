@@ -180,6 +180,27 @@ _C.MODEL.PROGRESS_MONITOR = CN()
 _C.MODEL.PROGRESS_MONITOR.use = False
 _C.MODEL.PROGRESS_MONITOR.alpha = 1.0  # loss multiplier
 
+# -----------------------------------------------------------------------------
+# STAGE 2 STRONG-FORM (STAGE2S) CONFIG
+# -----------------------------------------------------------------------------
+_C.STAGE2S = CN()
+_C.STAGE2S.ENABLED = False
+_C.STAGE2S.MODE = "off"  # off | log_only | offline_debug | online_eval
+_C.STAGE2S.LOG_DIR = "data/logs/stage2s"
+
+_C.STAGE2S.COUNTERFACTUAL = CN()
+_C.STAGE2S.COUNTERFACTUAL.PROBE_WIDTH = 4
+_C.STAGE2S.COUNTERFACTUAL.PROBE_POLICY = "topk_plus_hard_negative"
+_C.STAGE2S.COUNTERFACTUAL.ROLLOUT_FRACTION = 0.25
+
+_C.STAGE2S.PLANNER = CN()
+_C.STAGE2S.PLANNER.TOP_K = 2
+_C.STAGE2S.PLANNER.DEPTH = 2
+_C.STAGE2S.PLANNER.CALIBRATION = "temperature"
+
+_C.STAGE2S.MODEL = CN()
+_C.STAGE2S.MODEL.CHECKPOINT = ""
+
 
 def purge_keys(config: CN, keys: List[str]) -> None:
     for k in keys:
