@@ -79,6 +79,7 @@ from utils_p.memory import Memory, Memory_vft
 from utils_p.losses import RegressionLoss, KLLoss
 from vlnce_baselines.stage2s.contracts import CandidateRecord, CandidateToken, CounterfactualOutcome
 from vlnce_baselines.stage2s.logging import append_candidate_set_record, build_candidate_set_record
+from vlnce_baselines.stage2s.planner import Stage2SBranchPlanner
 from vlnce_baselines.stage2s.probing import choose_probe_indices
 
 
@@ -113,6 +114,32 @@ class RLTrainer(BaseVLNCETrainer):
             and self.config.STAGE2S.ENABLED
             and self.config.STAGE2S.MODE == "log_only"
         )
+
+    def _stage2s_online_eval_enabled(self):
+        return (
+            hasattr(self.config, "STAGE2S")
+            and self.config.STAGE2S.ENABLED
+            and self.config.STAGE2S.MODE == "online_eval"
+        )
+
+    def _stage2s_runtime_enabled(self):
+        return self._stage2s_log_only_enabled() or self._stage2s_online_eval_enabled()
+
+    def _stage2s_get_branch_planner(self):
+        if not self._stage2s_online_eval_enabled():
+            return None
+
+        if not hasattr(self, "_stage2s_branch_planner") or self._stage2s_branch_planner is None:
+            checkpoint_path = getattr(self.config.STAGE2S.MODEL, "CHECKPOINT", "")
+            if checkpoint_path and not os.path.exists(checkpoint_path):
+                checkpoint_path = ""
+            self._stage2s_branch_planner = Stage2SBranchPlanner(
+                top_k=int(self.config.STAGE2S.PLANNER.TOP_K),
+                depth=int(self.config.STAGE2S.PLANNER.DEPTH),
+                checkpoint_path=checkpoint_path,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            )
+        return self._stage2s_branch_planner
 
     def _stage2s_probe_candidates(self, wp_outputs):
         if not self._stage2s_log_only_enabled():
@@ -1737,9 +1764,13 @@ class RLTrainer(BaseVLNCETrainer):
             nav_outs = self.policy.net(**nav_inputs)
             nav_logits = nav_outs['global_logits']
 
-            if stage2s_probe_records is not None:
+            stage2s_state_bundles = None
+            stage2s_candidate_tokens = None
+            if stage2s_probe_records is not None or self._stage2s_online_eval_enabled():
                 origin_nav_logits = nav_outs.get('origin_global_logits')
-                for env_index, env_records in enumerate(stage2s_probe_records):
+                stage2s_state_bundles = []
+                stage2s_candidate_tokens = []
+                for env_index in range(self.envs.num_envs):
                     cand_embeds = pano_embeds[env_index][vp_inputs['nav_types'][env_index] == 1]
                     latent_state = self._stage2s_build_state_bundle(
                         env_index=env_index,
@@ -1758,14 +1789,67 @@ class RLTrainer(BaseVLNCETrainer):
                         nav_logits=nav_logits[env_index],
                         origin_nav_logits=None if origin_nav_logits is None else origin_nav_logits[env_index],
                     )
-                    self._stage2s_append_probe_records(
-                        env_index=env_index,
-                        stepk=stepk,
-                        wp_outputs=wp_outputs,
-                        env_records=env_records,
-                        latent_state=latent_state,
-                        candidate_tokens=candidate_tokens,
+                    stage2s_state_bundles.append(latent_state)
+                    stage2s_candidate_tokens.append(candidate_tokens)
+
+                    if stage2s_probe_records is not None:
+                        self._stage2s_append_probe_records(
+                            env_index=env_index,
+                            stepk=stepk,
+                            wp_outputs=wp_outputs,
+                            env_records=stage2s_probe_records[env_index],
+                            latent_state=latent_state,
+                            candidate_tokens=candidate_tokens,
+                        )
+
+            if self._stage2s_online_eval_enabled():
+                branch_planner = self._stage2s_get_branch_planner()
+                current_episodes = self.envs.current_episodes()
+                for env_index in range(self.envs.num_envs):
+                    candidate_records = [
+                        CandidateRecord(candidate_index=candidate_index, token=token)
+                        for candidate_index, token in enumerate(stage2s_candidate_tokens[env_index])
+                    ]
+                    candidate_set_record = build_candidate_set_record(
+                        candidate_set_id=f"{getattr(current_episodes[env_index], 'scene_id', 'unknown_scene')}:{current_episodes[env_index].episode_id}:{stepk}",
+                        latent_state=stage2s_state_bundles[env_index],
+                        candidates=candidate_records,
+                        episode_id=str(current_episodes[env_index].episode_id),
+                        step_id=stepk,
                     )
+                    planner_decision = branch_planner.select_record(candidate_set_record)
+                    selected_gmap_index = planner_decision.get('selected_gmap_index')
+                    selected_branch = next(
+                        (
+                            item
+                            for item in planner_decision['branch_scores']
+                            if item['candidate_index'] == planner_decision['selected_index']
+                        ),
+                        None,
+                    )
+                    self.logs['stage2s_changed'].append(float(planner_decision['changed']))
+                    self.logs['stage2s_selected_score'].append(float(planner_decision['selected_score']))
+                    self.logs['stage2s_baseline_score'].append(float(planner_decision['baseline_score']))
+                    if selected_branch is not None:
+                        self.logs['stage2s_selected_exec'].append(float(selected_branch.get('exec_prob', 0.0)))
+                        self.logs['stage2s_selected_progress'].append(float(selected_branch.get('progress', 0.0)))
+                    if planner_decision['changed'] and selected_gmap_index is not None:
+                        planner_logits = nav_logits[env_index].clone()
+                        planner_logits.fill_(-float('inf'))
+                        selected_gmap_index = int(selected_gmap_index)
+                        planner_logits[selected_gmap_index] = nav_logits[env_index, selected_gmap_index]
+                        nav_logits[env_index] = planner_logits
+                        self.memory_vft_pos.push_event(
+                            'blocked_semantic_branch',
+                            keys=avg_pano_embeds[env_index].detach().cpu().numpy(),
+                            logits=combined_embeds[env_index].detach().cpu().numpy(),
+                            metadata={
+                                'step': int(stepk),
+                                'candidate_set_id': candidate_set_record.candidate_set_id,
+                                'selected_index': int(planner_decision['selected_index']),
+                                'baseline_index': int(planner_decision['baseline_index']),
+                            },
+                        )
 
             nav_probs1 = F.softmax(nav_logits, 1) #new
             nav_probs = nav_probs1.clone()

@@ -11,6 +11,7 @@ from .calibration import CalibratedBranchAggregator, TemperatureScaler
 from .losses import build_stage2s_loss, pairwise_ranking_loss, stage2s_loss_terms
 from .metrics import intervention_rate, masked_binary_accuracy, masked_pearsonr
 from .model import Stage2SModel
+from .planner import Stage2SBranchPlanner
 from .host import build_stage2s_candidate_tokens, build_stage2s_state_bundle
 from .logging import (
     append_candidate_set_record,
@@ -41,6 +42,7 @@ __all__ = [
     "masked_binary_accuracy",
     "masked_pearsonr",
     "Stage2SModel",
+    "Stage2SBranchPlanner",
     "build_stage2s_candidate_tokens",
     "build_stage2s_state_bundle",
     "append_candidate_set_record",

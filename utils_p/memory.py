@@ -133,6 +133,7 @@ class Memory_vft(object):
         self.dimension = dimension
         self.key_dimension = key_dimension
         self.alpha = alpha
+        self.event_memory = {}
         # self.dim = dim
         # self.key_dim = key_dim
         logits = torch.randn(size, dimension)
@@ -146,6 +147,7 @@ class Memory_vft(object):
 
     def reset(self):
         self.memory = {}
+        self.event_memory = {}
 
     def get_size(self):
         return len(self.memory)
@@ -170,6 +172,31 @@ class Memory_vft(object):
 
             else:
                 self.memory.update({key.reshape(self.key_dimension).tobytes(): logits[i]})
+
+    def push_event(self, tag, keys, logits, metadata=None):
+        if metadata is None:
+            metadata = {}
+
+        keys_array = np.asarray(keys, dtype=np.float32).reshape(-1, self.key_dimension)
+        logits_array = np.asarray(logits, dtype=np.float32).reshape(-1, self.dimension)
+        self.push(keys_array, logits_array)
+
+        if tag not in self.event_memory:
+            self.event_memory[tag] = []
+        self.event_memory[tag].append(
+            {
+                'keys': keys_array.copy(),
+                'logits': logits_array.copy(),
+                'metadata': dict(metadata),
+            }
+        )
+        if len(self.event_memory[tag]) > self.size:
+            self.event_memory[tag] = self.event_memory[tag][-self.size:]
+
+    def get_event_count(self, tag=None):
+        if tag is None:
+            return sum(len(events) for events in self.event_memory.values())
+        return len(self.event_memory.get(tag, []))
 
        
         
