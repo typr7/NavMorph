@@ -98,3 +98,24 @@ def test_append_candidate_set_record_writes_gzip_jsonl(tmp_path):
         row = json.loads(next(f))
     assert row["candidate_set_id"] == "ep-3:5"
     assert row["episode_id"] == "ep-3"
+
+
+
+def _load_script_module(module_name, relative_path):
+    sys.modules.pop(module_name, None)
+    spec = importlib.util.spec_from_file_location(module_name, Path(relative_path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_run_one_debug_step_returns_finite_losses(tmp_path):
+    trainer_mod = _load_script_module(
+        "scripts.stage2s.train_stage2s_offline",
+        "scripts/stage2s/train_stage2s_offline.py",
+    )
+    metrics = trainer_mod.run_one_debug_step(output_dir=tmp_path)
+    assert metrics["total_loss"] == metrics["total_loss"]
+    assert metrics["exec_loss"] >= 0.0
