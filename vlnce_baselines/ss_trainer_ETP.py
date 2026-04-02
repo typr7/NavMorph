@@ -77,6 +77,8 @@ import sys
 from utils_p.prompt import Prompt
 from utils_p.memory import Memory, Memory_vft
 from utils_p.losses import RegressionLoss, KLLoss
+from vlnce_baselines.stage2s.contracts import CandidateRecord, CandidateToken, CounterfactualOutcome
+from vlnce_baselines.stage2s.logging import append_candidate_set_record, build_candidate_set_record
 from vlnce_baselines.stage2s.probing import choose_probe_indices
 
 
@@ -141,6 +143,54 @@ class RLTrainer(BaseVLNCETrainer):
                 env_records.append(probe_result)
             probe_records.append(env_records)
         return probe_records
+
+    def _stage2s_append_probe_records(self, env_index, stepk, wp_outputs, env_records):
+        if not env_records:
+            return
+
+        current_episode = self.envs.current_episodes()[env_index]
+        scene_id = getattr(current_episode, "scene_id", "unknown_scene")
+        candidate_records = []
+        candidate_count = len(wp_outputs['cand_distances'][env_index])
+        for record in env_records:
+            candidate_index = record["candidate_index"]
+            token = CandidateToken(
+                action_token={
+                    "angle": float(wp_outputs['cand_angles'][env_index][candidate_index]),
+                    "distance": float(wp_outputs['cand_distances'][env_index][candidate_index]),
+                },
+                semantic_bundle={
+                    "rank_proxy": float(candidate_count - candidate_index),
+                },
+            )
+            candidate_records.append(
+                CandidateRecord(
+                    candidate_index=candidate_index,
+                    token=token,
+                    outcome=CounterfactualOutcome.from_dict(record.get("outcome")),
+                    metadata={
+                        "final_position": record.get("final_position"),
+                        "final_rotation": record.get("final_rotation"),
+                    },
+                )
+            )
+
+        candidate_set_record = build_candidate_set_record(
+            candidate_set_id=f"{scene_id}:{current_episode.episode_id}:{stepk}",
+            latent_state=None,
+            candidates=candidate_records,
+            episode_id=str(current_episode.episode_id),
+            step_id=stepk,
+            metadata={
+                "scene_id": scene_id,
+                "candidate_count": candidate_count,
+                "probe_count": len(candidate_records),
+            },
+        )
+        append_candidate_set_record(
+            os.path.join(self.config.STAGE2S.LOG_DIR, f"{self.split}.jsonl.gz"),
+            candidate_set_record,
+        )
 
 
     def _make_dirs(self):
@@ -1374,6 +1424,14 @@ class RLTrainer(BaseVLNCETrainer):
                     in_train = (mode == 'train' and self.config.IL.waypoint_aug),
                 )
                 stage2s_probe_records = self._stage2s_probe_candidates(wp_outputs)
+                if stage2s_probe_records is not None:
+                    for env_index, env_records in enumerate(stage2s_probe_records):
+                        self._stage2s_append_probe_records(
+                            env_index=env_index,
+                            stepk=stepk,
+                            wp_outputs=wp_outputs,
+                            env_records=env_records,
+                        )
 
             
             prev_position = torch.tensor(origin_position)
