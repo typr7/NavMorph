@@ -118,3 +118,69 @@ def test_pairwise_ranking_loss_prefers_correct_semantic_ordering():
         mask,
     )
     assert good < bad
+
+
+
+def _class_has_method(path, class_name, method_name):
+    import ast
+    module = ast.parse(Path(path).read_text())
+    for node in module.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return any(isinstance(item, ast.FunctionDef) and item.name == method_name for item in node.body)
+    return False
+
+
+def test_build_stage2s_state_bundle_exports_expected_latent_keys():
+    host_mod = _load_stage2s_module("host")
+    bundle = host_mod.build_stage2s_state_bundle(
+        history_latent=torch.tensor([1.0, 2.0]),
+        stochastic_latent=torch.tensor([3.0]),
+        memory_latent=torch.tensor([4.0, 5.0]),
+        global_latent=torch.tensor([6.0]),
+    )
+    assert bundle.history_latent == [1.0, 2.0]
+    assert bundle.stochastic_latent == [3.0]
+    assert bundle.memory_latent == [4.0, 5.0]
+    assert bundle.global_latent == [6.0]
+
+
+def test_build_stage2s_candidate_tokens_attaches_nav_semantic_scores():
+    host_mod = _load_stage2s_module("host")
+    tokens = host_mod.build_stage2s_candidate_tokens(
+        cand_angles=[0.1, 0.2],
+        cand_distances=[1.0, 2.0],
+        cand_img_idxes=[3, 4],
+        cand_vp_ids=["g1", "g2"],
+        candidate_embeddings=torch.tensor([[1.0, 2.0, 3.0], [0.5, 0.25, -0.25]]),
+        gmap_vp_ids=[None, "g2", "g1"],
+        nav_logits=torch.tensor([0.0, 1.0, 2.0]),
+        origin_nav_logits=torch.tensor([0.0, 0.5, 1.5]),
+        max_candidate_local_dims=2,
+    )
+    assert tokens[0].semantic_bundle["nav_logit"] == 2.0
+    assert tokens[1].semantic_bundle["nav_logit"] == 1.0
+    assert len(tokens[0].candidate_local["embedding_head"]) == 2
+
+
+def test_navmorph_host_files_expose_stage2s_methods():
+    assert _class_has_method(
+        "vlnce_baselines/models/Policy_ViewSelection_ETP.py",
+        "ETP",
+        "build_stage2s_state_bundle",
+    )
+    assert _class_has_method(
+        "vlnce_baselines/models/Policy_ViewSelection_ETP.py",
+        "ETP",
+        "build_stage2s_candidate_tokens",
+    )
+    assert _class_has_method(
+        "vlnce_baselines/models/etp/vilmodel_cmt.py",
+        "GlocalTextPathNavCMT",
+        "export_stage2s_state_bundle",
+    )
+
+
+def test_ss_trainer_threads_stage2s_host_bundle_hooks():
+    trainer_text = Path("vlnce_baselines/ss_trainer_ETP.py").read_text()
+    assert "build_stage2s_state_bundle" in trainer_text
+    assert "build_stage2s_candidate_tokens" in trainer_text

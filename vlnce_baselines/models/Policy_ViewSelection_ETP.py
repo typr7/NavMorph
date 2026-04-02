@@ -34,6 +34,7 @@ import cv2
 import open3d as o3d
 from torch_kdtree import build_kd_tree
 from vlnce_baselines.models.utils import  *
+from vlnce_baselines.stage2s.host import build_stage2s_candidate_tokens
 
 image_global_x_db = []
 image_global_y_db = []
@@ -202,6 +203,45 @@ class ETP(Net):
         depth[depth>1.] = 1.
         depth[depth<0.] = 0.
         return depth
+
+    def build_stage2s_state_bundle(
+        self,
+        history_latent,
+        stochastic_latent=None,
+        memory_latent=None,
+        global_latent=None,
+        max_dims=None,
+    ):
+        return self.vln_bert.export_stage2s_state_bundle(
+            history_latent=history_latent,
+            stochastic_latent=stochastic_latent,
+            memory_latent=memory_latent,
+            global_latent=global_latent,
+            max_dims=max_dims,
+        )
+
+    def build_stage2s_candidate_tokens(
+        self,
+        wp_outputs,
+        env_index,
+        cand_vp_ids=None,
+        candidate_embeddings=None,
+        gmap_vp_ids=None,
+        nav_logits=None,
+        origin_nav_logits=None,
+        max_candidate_local_dims=16,
+    ):
+        return build_stage2s_candidate_tokens(
+            cand_angles=wp_outputs['cand_angles'][env_index],
+            cand_distances=wp_outputs['cand_distances'][env_index],
+            cand_img_idxes=wp_outputs['cand_img_idxes'][env_index],
+            cand_vp_ids=cand_vp_ids,
+            candidate_embeddings=candidate_embeddings,
+            gmap_vp_ids=gmap_vp_ids,
+            nav_logits=nav_logits,
+            origin_nav_logits=origin_nav_logits,
+            max_candidate_local_dims=max_candidate_local_dims,
+        )
 
     def forward(self, mode=None, 
                 txt_ids=None, txt_masks=None, txt_embeds=None, 

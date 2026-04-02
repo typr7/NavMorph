@@ -21,6 +21,7 @@ from vlnce_baselines.common.ops import create_transformer_encoder
 from vlnce_baselines.common.transformer import TransformerEncoder, TransformerEncoderLayer
 from vlnce_baselines.common.ops import extend_neg_masks, gen_seq_masks, pad_tensors_wgrad
 from vlnce_baselines.models.etp.nerf import create_nerf, run_nerf_feature
+from vlnce_baselines.stage2s.host import build_stage2s_state_bundle
 
 logger = logging.getLogger(__name__)
 
@@ -964,6 +965,22 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
     def forward_observe(self, pred_pano_embeds):################################################################################
         im_rgb = self.imagine_rgb(pred_pano_embeds)
         return im_rgb
+
+    def export_stage2s_state_bundle(
+        self,
+        history_latent,
+        stochastic_latent=None,
+        memory_latent=None,
+        global_latent=None,
+        max_dims=None,
+    ):
+        return build_stage2s_state_bundle(
+            history_latent=history_latent,
+            stochastic_latent=stochastic_latent,
+            memory_latent=memory_latent,
+            global_latent=global_latent,
+            max_dims=max_dims,
+        )
 
 
 

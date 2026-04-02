@@ -144,7 +144,25 @@ class RLTrainer(BaseVLNCETrainer):
             probe_records.append(env_records)
         return probe_records
 
-    def _stage2s_append_probe_records(self, env_index, stepk, wp_outputs, env_records):
+    def _stage2s_build_state_bundle(self, env_index, avg_pano_embeds, combined_embeds, real_state, nav_outs, nav_inputs):
+        global_latent = None
+        if nav_outs is not None and 'gmap_embeds' in nav_outs:
+            gmap_embeds = nav_outs['gmap_embeds'][env_index]
+            gmap_mask = nav_inputs['gmap_masks'][env_index].bool()
+            if torch.any(gmap_mask):
+                global_latent = gmap_embeds[gmap_mask].mean(dim=0)
+
+        stochastic_latent = None if real_state is None else real_state[env_index]
+        memory_latent = None if combined_embeds is None else combined_embeds[env_index]
+        history_latent = avg_pano_embeds[env_index]
+        return self.policy.net.build_stage2s_state_bundle(
+            history_latent=history_latent,
+            stochastic_latent=stochastic_latent,
+            memory_latent=memory_latent,
+            global_latent=global_latent,
+        )
+
+    def _stage2s_append_probe_records(self, env_index, stepk, wp_outputs, env_records, latent_state=None, candidate_tokens=None):
         if not env_records:
             return
 
@@ -154,15 +172,18 @@ class RLTrainer(BaseVLNCETrainer):
         candidate_count = len(wp_outputs['cand_distances'][env_index])
         for record in env_records:
             candidate_index = record["candidate_index"]
-            token = CandidateToken(
-                action_token={
-                    "angle": float(wp_outputs['cand_angles'][env_index][candidate_index]),
-                    "distance": float(wp_outputs['cand_distances'][env_index][candidate_index]),
-                },
-                semantic_bundle={
-                    "rank_proxy": float(candidate_count - candidate_index),
-                },
-            )
+            if candidate_tokens is not None and candidate_index < len(candidate_tokens):
+                token = candidate_tokens[candidate_index]
+            else:
+                token = CandidateToken(
+                    action_token={
+                        "angle": float(wp_outputs['cand_angles'][env_index][candidate_index]),
+                        "distance": float(wp_outputs['cand_distances'][env_index][candidate_index]),
+                    },
+                    semantic_bundle={
+                        "rank_proxy": float(candidate_count - candidate_index),
+                    },
+                )
             candidate_records.append(
                 CandidateRecord(
                     candidate_index=candidate_index,
@@ -177,7 +198,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         candidate_set_record = build_candidate_set_record(
             candidate_set_id=f"{scene_id}:{current_episode.episode_id}:{stepk}",
-            latent_state=None,
+            latent_state=latent_state,
             candidates=candidate_records,
             episode_id=str(current_episode.episode_id),
             step_id=stepk,
@@ -1424,14 +1445,6 @@ class RLTrainer(BaseVLNCETrainer):
                     in_train = (mode == 'train' and self.config.IL.waypoint_aug),
                 )
                 stage2s_probe_records = self._stage2s_probe_candidates(wp_outputs)
-                if stage2s_probe_records is not None:
-                    for env_index, env_records in enumerate(stage2s_probe_records):
-                        self._stage2s_append_probe_records(
-                            env_index=env_index,
-                            stepk=stepk,
-                            wp_outputs=wp_outputs,
-                            env_records=env_records,
-                        )
 
             
             prev_position = torch.tensor(origin_position)
@@ -1723,6 +1736,36 @@ class RLTrainer(BaseVLNCETrainer):
             no_vp_left = nav_inputs.pop('no_vp_left')
             nav_outs = self.policy.net(**nav_inputs)
             nav_logits = nav_outs['global_logits']
+
+            if stage2s_probe_records is not None:
+                origin_nav_logits = nav_outs.get('origin_global_logits')
+                for env_index, env_records in enumerate(stage2s_probe_records):
+                    cand_embeds = pano_embeds[env_index][vp_inputs['nav_types'][env_index] == 1]
+                    latent_state = self._stage2s_build_state_bundle(
+                        env_index=env_index,
+                        avg_pano_embeds=avg_pano_embeds,
+                        combined_embeds=combined_embeds,
+                        real_state=real_state,
+                        nav_outs=nav_outs,
+                        nav_inputs=nav_inputs,
+                    )
+                    candidate_tokens = self.policy.net.build_stage2s_candidate_tokens(
+                        wp_outputs=wp_outputs,
+                        env_index=env_index,
+                        cand_vp_ids=cand_vp[env_index],
+                        candidate_embeddings=cand_embeds,
+                        gmap_vp_ids=nav_inputs['gmap_vp_ids'][env_index],
+                        nav_logits=nav_logits[env_index],
+                        origin_nav_logits=None if origin_nav_logits is None else origin_nav_logits[env_index],
+                    )
+                    self._stage2s_append_probe_records(
+                        env_index=env_index,
+                        stepk=stepk,
+                        wp_outputs=wp_outputs,
+                        env_records=env_records,
+                        latent_state=latent_state,
+                        candidate_tokens=candidate_tokens,
+                    )
 
             nav_probs1 = F.softmax(nav_logits, 1) #new
             nav_probs = nav_probs1.clone()
