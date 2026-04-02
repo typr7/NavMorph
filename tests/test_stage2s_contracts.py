@@ -156,3 +156,68 @@ def test_main_bash_exposes_stage2s_entrypoints():
     assert "stage2s_log)" in bash_text
     assert "stage2s_train)" in bash_text
     assert "stage2s_eval)" in bash_text
+import subprocess
+
+
+def test_ss_trainer_etp_py_compile_succeeds():
+    result = subprocess.run(
+        [sys.executable, "-m", "py_compile", "vlnce_baselines/ss_trainer_ETP.py"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _load_stage2s_module(module_basename):
+    package_name = "vlnce_baselines"
+    subpackage_name = "vlnce_baselines.stage2s"
+    if package_name not in sys.modules:
+        pkg = types.ModuleType(package_name)
+        pkg.__path__ = [str(Path("vlnce_baselines"))]
+        sys.modules[package_name] = pkg
+    if subpackage_name not in sys.modules:
+        subpkg = types.ModuleType(subpackage_name)
+        subpkg.__path__ = [str(Path("vlnce_baselines/stage2s"))]
+        sys.modules[subpackage_name] = subpkg
+
+    module_name = f"{subpackage_name}.{module_basename}"
+    sys.modules.pop(module_name, None)
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        Path("vlnce_baselines/stage2s") / f"{module_basename}.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_candidate_set_record_round_trip_preserves_group_identity():
+    contracts = _load_stage2s_module("contracts")
+    record = contracts.CandidateSetRecord(
+        episode_id="ep-1",
+        step_id=3,
+        candidate_set_id="ep-1:3",
+        candidates=[],
+    )
+    restored = contracts.CandidateSetRecord.from_dict(record.to_dict())
+    assert restored.candidate_set_id == "ep-1:3"
+    assert restored.step_id == 3
+
+
+def test_build_candidate_set_record_returns_grouped_record():
+    contracts = _load_stage2s_module("contracts")
+    logging_mod = _load_stage2s_module("logging")
+    latent_state = contracts.StructuredLatentState(history_latent=[0.1, 0.2])
+    candidate = contracts.CandidateRecord(candidate_index=0)
+    record = logging_mod.build_candidate_set_record(
+        candidate_set_id="scene-1:ep-1:3",
+        latent_state=latent_state,
+        candidates=[candidate],
+        episode_id="ep-1",
+        step_id=3,
+    )
+    assert record.candidate_set_id == "scene-1:ep-1:3"
+    assert len(record.candidates) == 1
+    assert record.candidates[0].candidate_index == 0
