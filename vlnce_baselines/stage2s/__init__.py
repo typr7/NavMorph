@@ -7,6 +7,10 @@ from .contracts import (
     StructuredLatentState,
 )
 from .dataset import GroupedCounterfactualDataset
+from .calibration import CalibratedBranchAggregator, TemperatureScaler
+from .losses import build_stage2s_loss, pairwise_ranking_loss, stage2s_loss_terms
+from .metrics import intervention_rate, masked_binary_accuracy, masked_pearsonr
+from .model import Stage2SModel
 from .logging import (
     append_candidate_set_record,
     build_candidate_set_record,
@@ -27,6 +31,15 @@ __all__ = [
     "CounterfactualOutcome",
     "StructuredLatentState",
     "GroupedCounterfactualDataset",
+    "CalibratedBranchAggregator",
+    "TemperatureScaler",
+    "build_stage2s_loss",
+    "pairwise_ranking_loss",
+    "stage2s_loss_terms",
+    "intervention_rate",
+    "masked_binary_accuracy",
+    "masked_pearsonr",
+    "Stage2SModel",
     "append_candidate_set_record",
     "build_candidate_set_record",
     "load_candidate_set_records",
