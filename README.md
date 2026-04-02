@@ -113,6 +113,10 @@ Inspired by human cognition, we present NavMorph, a self-evolving world model fr
    bash run_r2r/main.bash eval # (run_rxr/main.bash)
    ```
 
+### Stage2S (Idea 3 strong-form)
+
+For the ongoing Stage2S rebuild on top of NavMorph, see `docs/stage2s_navmorph.md` for logging, offline training, online evaluation, phase gates, and failure signatures.
+
 ### Notes❗
 
    When transitioning from the R2R dataset to the RxR dataset based on the baseline code, you will need to adjust the camera settings in three places to prevent any simulation issues.
