@@ -201,3 +201,4 @@ def test_ss_trainer_threads_stage2s_host_bundle_hooks():
     assert "build_stage2s_state_bundle" in trainer_text
     assert "build_stage2s_candidate_tokens" in trainer_text
     assert "unwrap_parallel_module" in trainer_text
+    assert "resolve_stage2s_log_path" in trainer_text

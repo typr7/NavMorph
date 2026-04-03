@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+from types import SimpleNamespace
 
 from yacs.config import CfgNode as CN
 
@@ -221,6 +222,34 @@ def test_build_candidate_set_record_returns_grouped_record():
     assert record.candidate_set_id == "scene-1:ep-1:3"
     assert len(record.candidates) == 1
     assert record.candidates[0].candidate_index == 0
+
+
+def test_resolve_stage2s_log_path_falls_back_to_config_eval_split():
+    logging_mod = _load_stage2s_module("logging")
+    config = SimpleNamespace(
+        EVAL=SimpleNamespace(SPLIT="val_seen"),
+        STAGE2S=SimpleNamespace(LOG_DIR="data/logs/stage2s"),
+    )
+    path = logging_mod.resolve_stage2s_log_path(
+        log_dir=config.STAGE2S.LOG_DIR,
+        config=config,
+        active_split=None,
+    )
+    assert str(path).endswith("data/logs/stage2s/val_seen.jsonl.gz")
+
+
+def test_resolve_stage2s_log_path_prefers_explicit_active_split():
+    logging_mod = _load_stage2s_module("logging")
+    config = SimpleNamespace(
+        EVAL=SimpleNamespace(SPLIT="val_seen"),
+        STAGE2S=SimpleNamespace(LOG_DIR="data/logs/stage2s"),
+    )
+    path = logging_mod.resolve_stage2s_log_path(
+        log_dir=config.STAGE2S.LOG_DIR,
+        config=config,
+        active_split="val_unseen",
+    )
+    assert str(path).endswith("data/logs/stage2s/val_unseen.jsonl.gz")
 import ast
 from copy import deepcopy
 import numpy as np

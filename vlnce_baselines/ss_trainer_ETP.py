@@ -79,7 +79,11 @@ from utils_p.memory import Memory, Memory_vft
 from utils_p.losses import RegressionLoss, KLLoss
 from vlnce_baselines.stage2s.contracts import CandidateRecord, CandidateToken, CounterfactualOutcome
 from vlnce_baselines.stage2s.host import unwrap_parallel_module
-from vlnce_baselines.stage2s.logging import append_candidate_set_record, build_candidate_set_record
+from vlnce_baselines.stage2s.logging import (
+    append_candidate_set_record,
+    build_candidate_set_record,
+    resolve_stage2s_log_path,
+)
 from vlnce_baselines.stage2s.planner import Stage2SBranchPlanner
 from vlnce_baselines.stage2s.probing import choose_probe_indices
 
@@ -238,7 +242,11 @@ class RLTrainer(BaseVLNCETrainer):
             },
         )
         append_candidate_set_record(
-            os.path.join(self.config.STAGE2S.LOG_DIR, f"{self.split}.jsonl.gz"),
+            resolve_stage2s_log_path(
+                log_dir=self.config.STAGE2S.LOG_DIR,
+                config=self.config,
+                active_split=getattr(self, "split", None),
+            ),
             candidate_set_record,
         )
 

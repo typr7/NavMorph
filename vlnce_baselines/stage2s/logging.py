@@ -8,6 +8,34 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 from .contracts import CandidateRecord, CandidateSetRecord, StructuredLatentState
 
 
+def _nested_getattr(obj, path: str, default=None):
+    current = obj
+    for name in path.split("."):
+        if current is None or not hasattr(current, name):
+            return default
+        current = getattr(current, name)
+    return current
+
+
+def resolve_stage2s_active_split(config, active_split: Optional[str] = None) -> str:
+    if active_split:
+        return str(active_split)
+
+    for path in ("TASK_CONFIG.DATASET.SPLIT", "EVAL.SPLIT", "INFERENCE.SPLIT"):
+        value = _nested_getattr(config, path)
+        if value:
+            return str(value)
+    return "unknown_split"
+
+
+def resolve_stage2s_log_path(
+    log_dir: Union[str, Path],
+    config,
+    active_split: Optional[str] = None,
+) -> Path:
+    split = resolve_stage2s_active_split(config=config, active_split=active_split)
+    return Path(log_dir) / f"{split}.jsonl.gz"
+
 
 def build_candidate_set_record(
     candidate_set_id: str,
