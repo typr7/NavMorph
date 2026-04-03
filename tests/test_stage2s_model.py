@@ -144,6 +144,22 @@ def test_build_stage2s_state_bundle_exports_expected_latent_keys():
     assert bundle.global_latent == [6.0]
 
 
+def test_unwrap_parallel_module_returns_inner_module_when_present():
+    host_mod = _load_stage2s_module("host")
+
+    class Inner:
+        pass
+
+    class Wrapper:
+        def __init__(self):
+            self.module = Inner()
+
+    wrapper = Wrapper()
+    assert host_mod.unwrap_parallel_module(wrapper) is wrapper.module
+    plain = Inner()
+    assert host_mod.unwrap_parallel_module(plain) is plain
+
+
 def test_build_stage2s_candidate_tokens_attaches_nav_semantic_scores():
     host_mod = _load_stage2s_module("host")
     tokens = host_mod.build_stage2s_candidate_tokens(
@@ -184,3 +200,4 @@ def test_ss_trainer_threads_stage2s_host_bundle_hooks():
     trainer_text = Path("vlnce_baselines/ss_trainer_ETP.py").read_text()
     assert "build_stage2s_state_bundle" in trainer_text
     assert "build_stage2s_candidate_tokens" in trainer_text
+    assert "unwrap_parallel_module" in trainer_text

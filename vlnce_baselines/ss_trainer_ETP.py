@@ -78,6 +78,7 @@ from utils_p.prompt import Prompt
 from utils_p.memory import Memory, Memory_vft
 from utils_p.losses import RegressionLoss, KLLoss
 from vlnce_baselines.stage2s.contracts import CandidateRecord, CandidateToken, CounterfactualOutcome
+from vlnce_baselines.stage2s.host import unwrap_parallel_module
 from vlnce_baselines.stage2s.logging import append_candidate_set_record, build_candidate_set_record
 from vlnce_baselines.stage2s.planner import Stage2SBranchPlanner
 from vlnce_baselines.stage2s.probing import choose_probe_indices
@@ -172,6 +173,7 @@ class RLTrainer(BaseVLNCETrainer):
         return probe_records
 
     def _stage2s_build_state_bundle(self, env_index, avg_pano_embeds, combined_embeds, real_state, nav_outs, nav_inputs):
+        policy_net = unwrap_parallel_module(self.policy.net)
         global_latent = None
         if nav_outs is not None and 'gmap_embeds' in nav_outs:
             gmap_embeds = nav_outs['gmap_embeds'][env_index]
@@ -182,7 +184,7 @@ class RLTrainer(BaseVLNCETrainer):
         stochastic_latent = None if real_state is None else real_state[env_index]
         memory_latent = None if combined_embeds is None else combined_embeds[env_index]
         history_latent = avg_pano_embeds[env_index]
-        return self.policy.net.build_stage2s_state_bundle(
+        return policy_net.build_stage2s_state_bundle(
             history_latent=history_latent,
             stochastic_latent=stochastic_latent,
             memory_latent=memory_latent,
@@ -1770,6 +1772,7 @@ class RLTrainer(BaseVLNCETrainer):
                 origin_nav_logits = nav_outs.get('origin_global_logits')
                 stage2s_state_bundles = []
                 stage2s_candidate_tokens = []
+                policy_net = unwrap_parallel_module(self.policy.net)
                 for env_index in range(self.envs.num_envs):
                     cand_embeds = pano_embeds[env_index][vp_inputs['nav_types'][env_index] == 1]
                     latent_state = self._stage2s_build_state_bundle(
@@ -1780,7 +1783,7 @@ class RLTrainer(BaseVLNCETrainer):
                         nav_outs=nav_outs,
                         nav_inputs=nav_inputs,
                     )
-                    candidate_tokens = self.policy.net.build_stage2s_candidate_tokens(
+                    candidate_tokens = policy_net.build_stage2s_candidate_tokens(
                         wp_outputs=wp_outputs,
                         env_index=env_index,
                         cand_vp_ids=cand_vp[env_index],

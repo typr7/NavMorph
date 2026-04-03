@@ -7,6 +7,10 @@ import torch
 from .contracts import CandidateToken, StructuredLatentState
 
 
+def unwrap_parallel_module(module):
+    return getattr(module, "module", module)
+
+
 def _flatten_numeric(value) -> List[float]:
     if value is None:
         return []
