@@ -2010,7 +2010,6 @@ class RLTrainer(BaseVLNCETrainer):
                     metric['ndtw'] = np.exp(-dtw_distance / (len(gt_path) * 3.))
                     metric['sdtw'] = metric['ndtw'] * metric['success']
                     metric['ghost_cnt'] = self.gmaps[i].ghost_cnt
-                    print(metric['oracle_success'],metric['success'],metric['spl'])
                     self.stat_eps[ep_id] = metric
                     self.pbar.update()
 
