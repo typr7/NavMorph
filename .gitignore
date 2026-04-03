@@ -1,1 +1,13 @@
-.worktrees/
+.worktrees
+
+*.pyc
+
+__pycache__/
+
+.vscode
+
+data/
+
+.cpython-37.pyc
+
+*.yaml

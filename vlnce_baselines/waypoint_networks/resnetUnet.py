@@ -23,7 +23,7 @@ class ResNetUNet(nn.Module):
             self.positional_embedding = nn.Parameter(scale * torch.randn((positional_embedding_dim,192,192)))
 
         self.base_model = models.resnet18(pretrained=False)
-        self.base_model.load_state_dict(torch.load("pretrained/resnet18-f37072fd.pth"))
+        self.base_model.load_state_dict(torch.load("/data/data1/wzh/NavMorph/pretrained/resnet18-f37072fd.pth"))
         self.base_model.conv1 = nn.Conv2d(n_channel_in, 64, kernel_size=7, stride=2, padding=3,bias=False)
         self.base_layers = list(self.base_model.children())
 
