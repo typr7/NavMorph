@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Iterable, List, Optional, Sequence
+import numpy as np
 
 from .contracts import CounterfactualOutcome
 
@@ -45,7 +46,7 @@ def choose_probe_indices(
 def pack_sim_snapshot(sim) -> dict:
     state = sim.get_agent_state()
     return {
-        "position": deepcopy(list(state.position)),
+        "position": np.array(state.position, copy=True),
         "rotation": deepcopy(state.rotation),
     }
 

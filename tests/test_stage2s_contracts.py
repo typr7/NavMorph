@@ -223,6 +223,7 @@ def test_build_candidate_set_record_returns_grouped_record():
     assert record.candidates[0].candidate_index == 0
 import ast
 from copy import deepcopy
+import numpy as np
 
 
 class FakeAgentState:
@@ -233,14 +234,16 @@ class FakeAgentState:
 
 class FakeSim:
     def __init__(self):
-        self.position = [1.0, 2.0, 3.0]
+        self.position = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
         self.rotation = {"yaw": 0.5}
+        self.last_set_position_type = None
 
     def get_agent_state(self):
         return FakeAgentState(position=self.position, rotation=self.rotation)
 
     def set_agent_state(self, position, rotation):
-        self.position = list(position)
+        self.last_set_position_type = type(position)
+        self.position = np.asarray(position, dtype=np.float32)
         self.rotation = deepcopy(rotation)
 
 
@@ -263,7 +266,9 @@ def test_pack_and_restore_sim_snapshot_with_fake_sim():
     sim.set_agent_state([9.0, 9.0, 9.0], {"yaw": 9.0})
     probing.restore_sim_snapshot(sim, snapshot)
     restored = sim.get_agent_state()
-    assert restored.position == [1.0, 2.0, 3.0]
+    assert isinstance(snapshot["position"], np.ndarray)
+    assert sim.last_set_position_type is np.ndarray
+    assert restored.position.tolist() == [1.0, 2.0, 3.0]
     assert restored.rotation == {"yaw": 0.5}
 
 
