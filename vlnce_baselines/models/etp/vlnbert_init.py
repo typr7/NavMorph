@@ -31,7 +31,8 @@ def get_vlnbert_models(config=None):
     
     if config.task_type == 'r2r':
         #cfg_name = 'bert_config/bert-base-uncased'
-        cfg_name = 'vlnce_baselines/bert-base-uncased'
+        # cfg_name = 'vlnce_baselines/bert-base-uncased'
+        cfg_name = '/data/data1/wzh/NavMorph/bert_config/bert-base-uncased'
     elif config.task_type == 'rxr':
         cfg_name = 'bert_config/xlm-roberta-base'
     vis_config = PretrainedConfig.from_pretrained(cfg_name)

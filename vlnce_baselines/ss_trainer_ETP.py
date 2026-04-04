@@ -273,7 +273,7 @@ class RLTrainer(BaseVLNCETrainer):
                 device_ids=[self.device],
                 output_device=self.device,
             )
-        checkpoint = torch.load("/pretrained/segm.pt", map_location="cpu")
+        checkpoint = torch.load("/data/data1/wzh/NavMorph/pretrained/segm.pt", map_location="cpu")
         self.img_segmentor.load_state_dict(checkpoint['models']['img_segm_model'])         
         self.img_segmentor.eval()
 
@@ -313,7 +313,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         self.optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.policy.parameters()), lr=self.config.IL.lr)
 
-        ckpt_dict = self.load_checkpoint('/pretrained/cwp_predictor.pth', map_location="cpu")           
+        ckpt_dict = self.load_checkpoint('/data/data1/wzh/NavMorph/pretrained/cwp_predictor.pth', map_location="cpu")           
         b = [key for key in ckpt_dict["state_dict"].keys()]
         for key in b:
             if 'rgb_encoder' in key:
@@ -321,7 +321,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.policy.load_state_dict(ckpt_dict["state_dict"],strict=False)
       
 
-        ckpt_dict = self.load_checkpoint('/pretrained/NeRF_p16_8x8.pth', map_location="cpu")
+        ckpt_dict = self.load_checkpoint('/data/data1/wzh/NavMorph/pretrained/NeRF_p16_8x8.pth', map_location="cpu")
         b = [key for key in ckpt_dict["state_dict"].keys()]
         for key in b:
             if 'rgb_encoder' in key:

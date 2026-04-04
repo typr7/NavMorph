@@ -265,9 +265,9 @@ class CLIPEncoder(nn.Module):
             # scripted_model = torch.load('data/ViT-B-'+str(patch_size)+'.pt')
             # state_dict = scripted_model.state_dict()
             # self.model.load_state_dict(state_dict)
-            self.model.load_state_dict(torch.load('/data/ViT-B-'+str(patch_size)+'.pt', map_location = torch.device('cpu')).state_dict(),strict=False)
+            self.model.load_state_dict(torch.load('/data/data1/wzh/NavMorph/pretrained/ViT-B-'+str(patch_size)+'.pt', map_location = torch.device('cpu')).state_dict(),strict=False)
         elif patch_size == 32:
-            self.model.load_state_dict(torch.jit.load('data/ViT-B-'+str(patch_size)+'.pt', map_location = torch.device('cpu')).state_dict(),strict=False)
+            self.model.load_state_dict(torch.jit.load('/data/data1/wzh/NavMorph/pretrained/ViT-B-'+str(patch_size)+'.pt', map_location = torch.device('cpu')).state_dict(),strict=False)
         self.model = self.model.to(device)
 
         for param in self.model.parameters():
