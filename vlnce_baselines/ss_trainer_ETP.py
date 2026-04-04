@@ -1417,7 +1417,7 @@ class RLTrainer(BaseVLNCETrainer):
                 combined_pano =  torch.cat((vis_embeds, pos_embedding), dim=-1) # 1* 1536 
                 self.memory_vft_pos.push(keys=vis_embeds.detach().cpu().numpy(), logits=combined_pano.detach().cpu().numpy()) # keys: pano features, logits: features with positions
                 enhanced_pano_embeds = self.memory_vft_pos.retrieve_prompt_add_avg(avg_pano_embeds=vis_embeds.detach().cpu().numpy(), combined = combined_pano.detach().cpu().numpy()) #
-                vis_embeds_n = enhanced_pano_embeds[:, :768]
+                vis_embeds_n = enhanced_pano_embeds[..., :vis_embeds.size(-1)]
                 avg_pano_embeds = vis_embeds_n.to(self.device) ##########################################################################################################
                 # if random.random() < 0.5:
                 #     avg_pano_embeds = vis_embeds_n.to(self.device)
@@ -1634,8 +1634,17 @@ class RLTrainer(BaseVLNCETrainer):
                 cand_real_pos = [None] * self.envs.num_envs
 
             for i in range(self.envs.num_envs):
+                graph_embed_dim = pano_embeds.size(-1)
+
                 cur_embeds = avg_pano_embeds[i]
+                if cur_embeds.dim() > 1:
+                    cur_embeds = cur_embeds.reshape(-1, cur_embeds.size(-1))[0]
+                cur_embeds = cur_embeds[..., :graph_embed_dim].reshape(-1)
+
                 cand_embeds = pano_embeds[i][vp_inputs['nav_types'][i]==1]
+                if cand_embeds.dim() > 2:
+                    cand_embeds = cand_embeds.reshape(-1, cand_embeds.size(-1))
+                cand_embeds = cand_embeds[..., :graph_embed_dim]
                 self.gmaps[i].update_graph(prev_vp[i], stepk+1,
                                             cur_vp[i], cur_pos[i], cur_embeds,
                                             cand_vp[i], cand_pos[i], cand_embeds,

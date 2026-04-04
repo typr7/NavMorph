@@ -282,35 +282,19 @@ class Memory_vft(object):
             avg_pano_with_prompts: Tensor of shape (1, 768) with enhanced embeddings.
         """
         ud = 0.2
-        # Initialize a list to store the updated pano_embeds with prompts
-        pano_with_prompts = []
-
-        # Define a linear layer to project concatenated prompts to the desired dimension
-        linear_layer = torch.nn.Linear(in_features=1536, out_features=768)
-
-        # Iterate over each direction in pano_embeds (12 directions in total)
         if isinstance(avg_pano_embeds, torch.Tensor):
             avg_pano_embeds = avg_pano_embeds.detach().cpu().numpy()
 
         posprompts, _ = self.get_topk(keys=avg_pano_embeds, k=top_k)
+        if posprompts.dim() == 3 and posprompts.size(1) == 1:
+            posprompts = posprompts[:, 0, :]
+        elif posprompts.dim() > 2:
+            posprompts = posprompts.reshape(posprompts.size(0), -1)
 
-                # Calculate the mean of the top-k prompts (1*768)
-            #mean_prompt = torch.from_numpy(prompts).mean(dim=0, keepdim=True)
-            #mean_prompt = prompts.mean(dim=0, keepdim=True)
-        avg_pano_embeds = torch.from_numpy(avg_pano_embeds).float()
         combined_embeds = torch.from_numpy(combined).float()
-                # Concatenate the mean_prompt with direction_embed
-            #concatenated = torch.cat([mean_prompt, avg_pano_embeds], dim=-1)  # (1, 1536)
+        if combined_embeds.dim() > 2:
+            combined_embeds = combined_embeds.reshape(combined_embeds.size(0), -1)
 
-                # Use the linear layer to project back to (1, 768)
-            #enhanced_embed = linear_layer(concatenated)
-        enhanced_embed = combined_embeds * (1-ud) + posprompts.squeeze(0) * ud
-
-                # Add the enhanced result to the pano_with_prompts list
-            #pano_with_prompts.append(enhanced_embed)
-
-            # Stack the updated embeddings back to form a tensor of shape (1, 12, 768)
-        pano_with_posprompts = enhanced_embed
-
-        return pano_with_posprompts
+        enhanced_embed = combined_embeds * (1 - ud) + posprompts * ud
+        return enhanced_embed
     
