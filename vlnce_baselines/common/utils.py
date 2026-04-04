@@ -22,10 +22,12 @@ def extract_instruction_tokens(
             isinstance(observations[i][instruction_sensor_uuid], dict)
             and tokens_uuid in observations[i][instruction_sensor_uuid]
         ):
-            token = observations[i][instruction_sensor_uuid]["tokens"][:max_length]
+            token = list(observations[i][instruction_sensor_uuid]["tokens"][:max_length])
             if len(token) < max_length:
                 token += [pad_id] * (max_length - len(token))
-            observations[i][instruction_sensor_uuid] = token
+            observations[i][instruction_sensor_uuid] = np.asarray(
+                token, dtype=np.int64
+            )
         else:
             break
     return observations
