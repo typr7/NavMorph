@@ -11,11 +11,14 @@ from habitat_baselines.common.baseline_registry import baseline_registry
 import habitat_extensions  # noqa: F401
 import vlnce_baselines  # noqa: F401
 from vlnce_baselines.config.default import get_config
+from vlnce_baselines.common.parallel_utils import (
+    resolve_local_rank,
+    validate_parallel_config,
+)
 # from vlnce_baselines.nonlearning_agents import (
 #     evaluate_agent,
 #     nonlearning_inference,
 # )
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 
 def main():
@@ -47,7 +50,14 @@ def main():
         nargs=argparse.REMAINDER,
         help="Modify config options from command line",
     )
-    parser.add_argument('--local_rank', type=int, default=0, help="local gpu id")
+    parser.add_argument(
+        '--local_rank',
+        '--local-rank',
+        dest='local_rank',
+        type=int,
+        default=None,
+        help="local gpu id",
+    )
 
     #Prompt
     parser.add_argument('--memory_size', type=int, default=1000)
@@ -89,7 +99,23 @@ def run_exp(exp_name: str, exp_config: str,
     if 'CMA' in config.MODEL.policy_name and 'r2r' in config.BASE_TASK_CONFIG_PATH:
         config.TASK_CONFIG.DATASET.DATA_PATH = 'data/datasets/R2R_VLNCE_v1-2_preprocessed/{split}/{split}.json.gz'
 
-    config.local_rank = local_rank
+    config.local_rank = resolve_local_rank(local_rank)
+    if torch.cuda.is_available():
+        if config.GPU_NUMBERS > 1:
+            if config.local_rank >= len(config.TORCH_GPU_IDS):
+                raise ValueError(
+                    f"local_rank={config.local_rank} exceeds TORCH_GPU_IDS={config.TORCH_GPU_IDS}"
+                )
+            config.TORCH_GPU_ID = config.TORCH_GPU_IDS[config.local_rank]
+        elif isinstance(config.TORCH_GPU_IDS, list) and len(config.TORCH_GPU_IDS) > 0:
+            config.TORCH_GPU_ID = config.TORCH_GPU_IDS[0]
+        torch.cuda.set_device(config.TORCH_GPU_ID)
+    validate_parallel_config(
+        gpu_numbers=config.GPU_NUMBERS,
+        num_environments=config.NUM_ENVIRONMENTS,
+        torch_gpu_ids=config.TORCH_GPU_IDS,
+        simulator_gpu_ids=config.SIMULATOR_GPU_IDS,
+    )
 
     #prompt
     config.memory_size = memory_size

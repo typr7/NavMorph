@@ -834,8 +834,9 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
                 pano_embeds, src_key_padding_mask=pano_masks.logical_not()
             )
 
-        delta_embedding = self.pos_encoder(delta_p).unsqueeze(0) # 1*768
-
+        if delta_p.dim() == 1:
+            delta_p = delta_p.unsqueeze(0)
+        delta_embedding = self.pos_encoder(delta_p.to(device))
         return delta_embedding, pano_embeds, pano_masks
         # return pano_embeds, pano_masks
 
@@ -992,4 +993,3 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
         #    return self.forward_imagine(
 
         #    )
-    

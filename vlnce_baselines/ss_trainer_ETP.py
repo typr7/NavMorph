@@ -36,6 +36,12 @@ from habitat.tasks.utils import cartesian_to_polar
 from vlnce_baselines.common.aux_losses import AuxLosses
 from vlnce_baselines.common.base_il_trainer import BaseVLNCETrainer
 from vlnce_baselines.common.env_utils import construct_envs, construct_envs_for_rl, is_slurm_batch_job
+from vlnce_baselines.common.parallel_utils import (
+    batched_posref_update,
+    filter_batch_distribution_rows,
+    filter_batch_tensor_rows,
+    positions_to_tensor,
+)
 from vlnce_baselines.common.utils import extract_instruction_tokens
 from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST, calculate_vp_rel_pos_fts
 from vlnce_baselines.utils import reduce_loss
@@ -97,7 +103,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.prompt_alpha = config.prompt_alpha
         self.neighbor = config.neighbor
         self.image_size = config.image_size
-        self.prompt = Prompt(prompt_alpha=self.prompt_alpha, image_size=self.image_size).to(self.device)
+        self.prompt = Prompt(prompt_alpha=self.prompt_alpha, image_size=self.image_size)
         # self.memory_bank = Memory(size=config.memory_size, dimension=self.prompt.data_prompt.numel())
         self.memory_vft_pos = Memory_vft(size=config.memory_size, dimension=1*1536)
         self.imagine_T = config.imagine_T
@@ -121,6 +127,30 @@ class RLTrainer(BaseVLNCETrainer):
             },
             f=os.path.join(self.config.CHECKPOINT_FOLDER, f"ckpt.iter{iteration}.pth"),
         )
+
+    def _set_process_local_device(self):
+        self.world_size = self.config.GPU_NUMBERS
+        self.local_rank = self.config.local_rank
+        self.batch_size = self.config.IL.batch_size
+
+        if self.world_size > 1:
+            local_device_id = self.config.TORCH_GPU_IDS[self.local_rank]
+            self.device = torch.device("cuda", local_device_id)
+            torch.cuda.set_device(self.device)
+            if not distr.is_initialized():
+                distr.init_process_group(
+                    backend='nccl',
+                    init_method='env://',
+                    timeout=datetime.timedelta(seconds=7200000),
+                )
+            self.config.defrost()
+            self.config.TORCH_GPU_ID = local_device_id
+            self.config.freeze()
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda", self.config.TORCH_GPU_ID)
+            torch.cuda.set_device(self.device)
+
+        self.prompt = self.prompt.to(self.device)
 
     def _set_config(self):
         self.split = self.config.TASK_CONFIG.DATASET.SPLIT
@@ -184,17 +214,7 @@ class RLTrainer(BaseVLNCETrainer):
                     self.config.TASK_CONFIG.SIMULATOR.AGENT_0.SENSORS.append(camera_template)
         self.config.freeze()
 
-        self.world_size = self.config.GPU_NUMBERS
-        self.local_rank = self.config.local_rank
-        self.batch_size = self.config.IL.batch_size
-        
-        torch.cuda.set_device(self.device)
-        if self.world_size > 1:
-            distr.init_process_group(backend='nccl', init_method='env://',timeout=datetime.timedelta(seconds=7200000))
-            self.device = self.config.TORCH_GPU_IDS[self.local_rank]
-            self.config.defrost()
-            self.config.TORCH_GPU_ID = self.config.TORCH_GPU_IDS[self.local_rank]
-            self.config.freeze()
+        self._set_process_local_device()
 
     def _init_envs(self):
         # for DDP to load different data
@@ -242,11 +262,18 @@ class RLTrainer(BaseVLNCETrainer):
         self.img_segmentor = self.img_segmentor.to(self.device)
 
         if self.config.GPU_NUMBERS > 1:
-            self.img_segmentor = DDP(self.img_segmentor,device_ids=[self.device], output_device=self.device)
+            self.img_segmentor = DDP(
+                self.img_segmentor,
+                device_ids=[self.device],
+                output_device=self.device,
+            )
         else:
-            self.img_segmentor = torch.nn.DataParallel(self.img_segmentor)
-
-        checkpoint = torch.load("/pretrained/segm.pt")
+            self.img_segmentor = torch.nn.DataParallel(
+                self.img_segmentor,
+                device_ids=[self.device],
+                output_device=self.device,
+            )
+        checkpoint = torch.load("/pretrained/segm.pt", map_location="cpu")
         self.img_segmentor.load_state_dict(checkpoint['models']['img_segm_model'])         
         self.img_segmentor.eval()
 
@@ -404,7 +431,7 @@ class RLTrainer(BaseVLNCETrainer):
                 else:
                     raise NotImplementedError
        
-        return torch.tensor(teacher_actions).cuda()
+        return torch.tensor(teacher_actions, device=self.device)
 
 
 
@@ -430,10 +457,10 @@ class RLTrainer(BaseVLNCETrainer):
             batch_nav_types.append(torch.LongTensor(nav_types))
             batch_view_lens.append(len(nav_types))
         # collate
-        batch_rgb_fts = pad_tensors_wgrad(batch_rgb_fts)
-        batch_loc_fts = pad_tensors_wgrad(batch_loc_fts).cuda()
-        batch_nav_types = pad_sequence(batch_nav_types, batch_first=True).cuda()
-        batch_view_lens = torch.LongTensor(batch_view_lens).cuda()
+        batch_rgb_fts = pad_tensors_wgrad(batch_rgb_fts).to(self.device)
+        batch_loc_fts = pad_tensors_wgrad(batch_loc_fts).to(self.device)
+        batch_nav_types = pad_sequence(batch_nav_types, batch_first=True).to(self.device)
+        batch_view_lens = torch.LongTensor(batch_view_lens).to(self.device)
 
         return {
             'rgb_fts': batch_rgb_fts, 'loc_fts': batch_loc_fts,
@@ -495,19 +522,19 @@ class RLTrainer(BaseVLNCETrainer):
             batch_gmap_visited_masks.append(torch.BoolTensor(gmap_visited_masks))
         
         # collate
-        batch_gmap_step_ids = pad_sequence(batch_gmap_step_ids, batch_first=True).cuda()
-        batch_gmap_img_fts = pad_tensors_wgrad(batch_gmap_img_fts)
-        batch_gmap_pos_fts = pad_tensors_wgrad(batch_gmap_pos_fts).cuda()
+        batch_gmap_step_ids = pad_sequence(batch_gmap_step_ids, batch_first=True).to(self.device)
+        batch_gmap_img_fts = pad_tensors_wgrad(batch_gmap_img_fts).to(self.device)
+        batch_gmap_pos_fts = pad_tensors_wgrad(batch_gmap_pos_fts).to(self.device)
         batch_gmap_lens = torch.LongTensor(batch_gmap_lens)
-        batch_gmap_masks = gen_seq_masks(batch_gmap_lens).cuda()
-        batch_gmap_visited_masks = pad_sequence(batch_gmap_visited_masks, batch_first=True).cuda()
+        batch_gmap_masks = gen_seq_masks(batch_gmap_lens).to(self.device)
+        batch_gmap_visited_masks = pad_sequence(batch_gmap_visited_masks, batch_first=True).to(self.device)
 
         bs = len(cur_vp)
         max_gmap_len = max(batch_gmap_lens)
         gmap_pair_dists = torch.zeros(bs, max_gmap_len, max_gmap_len).float()
         for i in range(bs):
             gmap_pair_dists[i, :batch_gmap_lens[i], :batch_gmap_lens[i]] = batch_gmap_pair_dists[i]
-        gmap_pair_dists = gmap_pair_dists.cuda()
+        gmap_pair_dists = gmap_pair_dists.to(self.device)
 
         return {
             'gmap_vp_ids': batch_gmap_vp_ids, 'gmap_step_ids': batch_gmap_step_ids,
@@ -519,9 +546,12 @@ class RLTrainer(BaseVLNCETrainer):
 
     def _history_variable(self, obs):
         batch_size = obs['pano_rgb'].shape[0]
-        hist_rgb_fts = obs['pano_rgb'][:, 0, ...].cuda()
-        hist_pano_rgb_fts = obs['pano_rgb'].cuda()
-        hist_pano_ang_fts = obs['pano_angle_fts'].unsqueeze(0).expand(batch_size, -1, -1).cuda()
+        hist_rgb_fts = obs['pano_rgb'][:, 0, ...].to(self.device)
+        hist_pano_rgb_fts = obs['pano_rgb'].to(self.device)
+        hist_pano_ang_fts = obs['pano_angle_fts']
+        if hist_pano_ang_fts.dim() == 2:
+            hist_pano_ang_fts = hist_pano_ang_fts.unsqueeze(0).expand(batch_size, -1, -1)
+        hist_pano_ang_fts = hist_pano_ang_fts.to(self.device)
 
         return hist_rgb_fts, hist_pano_rgb_fts, hist_pano_ang_fts
 
@@ -617,7 +647,7 @@ class RLTrainer(BaseVLNCETrainer):
         for idx in pbar:
             self.optimizer.zero_grad()
             # self.loss = 0.
-            self.loss = torch.tensor(0.0, dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
+            self.loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
             with autocast():
                 self.rollout('train', ml_weight, sample_ratio)
@@ -712,7 +742,11 @@ class RLTrainer(BaseVLNCETrainer):
         else:
             eps_to_eval = min(self.config.EVAL.EPISODE_COUNT, sum(self.envs.number_of_episodes))
         self.stat_eps = {}
-        self.pbar = tqdm.tqdm(total=eps_to_eval) if self.config.use_pbar else None
+        self.pbar = (
+            tqdm.tqdm(total=eps_to_eval)
+            if self.config.use_pbar and self.local_rank < 1
+            else None
+        )
         while len(self.stat_eps) < eps_to_eval:
             self.rollout('eval')
         self.envs.close()
@@ -725,7 +759,7 @@ class RLTrainer(BaseVLNCETrainer):
             aggregated_states[stat_key] = (
                 sum(v[stat_key] for v in self.stat_eps.values()) / num_episodes
             )
-        total = torch.tensor(num_episodes).cuda()
+        total = torch.tensor(num_episodes, device=self.device)
         if self.world_size > 1:
             distr.reduce(total,dst=0)
         total = total.item()
@@ -733,7 +767,7 @@ class RLTrainer(BaseVLNCETrainer):
         if self.world_size > 1:
             logger.info(f"rank {self.local_rank}'s {num_episodes}-episode results: {aggregated_states}")
             for k,v in aggregated_states.items():
-                v = torch.tensor(v*num_episodes).cuda()
+                v = torch.tensor(v * num_episodes, device=self.device)
                 cat_v = gather_list_and_concat(v,self.world_size)
                 v = (sum(cat_v)/total).item()
                 aggregated_states[k] = v
@@ -799,15 +833,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.config.SENSORS = task_config.SIMULATOR.AGENT_0.SENSORS
         self.config.freeze()
         
-        self.world_size = self.config.GPU_NUMBERS
-        self.local_rank = self.config.local_rank
-        torch.cuda.set_device(self.device)
-        if self.world_size > 1:
-            distr.init_process_group(backend='nccl', init_method='env://',timeout=datetime.timedelta(seconds=7200000))
-            self.device = self.config.TORCH_GPU_IDS[self.local_rank]
-            self.config.defrost()
-            self.config.TORCH_GPU_ID = self.config.TORCH_GPU_IDS[self.local_rank]
-            self.config.freeze()
+        self._set_process_local_device()
 
         self.traj = self.collect_infer_traj()
 
@@ -837,7 +863,7 @@ class RLTrainer(BaseVLNCETrainer):
             eps_to_infer = min(self.config.INFERENCE.EPISODE_COUNT, sum(self.envs.number_of_episodes))
         self.path_eps = defaultdict(list)
         self.inst_ids: Dict[str, int] = {}   # transfer submit format
-        self.pbar = tqdm.tqdm(total=eps_to_infer)
+        self.pbar = tqdm.tqdm(total=eps_to_infer) if self.local_rank < 1 else None
 
         while len(self.path_eps) < eps_to_infer:
             self.rollout('infer')
@@ -918,17 +944,15 @@ class RLTrainer(BaseVLNCETrainer):
         
 
 
-    def posref_update(self, position, pred_cur_position, ghost_pos, gmap_vp_ids, nav_logits, alpha):
-        for idx, vp_id in enumerate(gmap_vp_ids[0]):
-            if vp_id in ghost_pos:
-                gmap_point = ghost_pos[vp_id]
-                distance_ref = np.linalg.norm(pred_cur_position - gmap_point)  # L2 norm calculation
-            else:
-                # distance_ref = 0
-                distance_ref = np.linalg.norm(pred_cur_position - position)
-            weight = np.exp(-alpha * distance_ref)
-            nav_logits[:, idx] += weight  # Apply the smoother weight based on distance
-        return nav_logits
+    def posref_update(self, positions, pred_cur_positions, ghost_pos_batch, gmap_vp_ids_batch, nav_logits, alpha):
+        return batched_posref_update(
+            positions=positions,
+            pred_cur_positions=pred_cur_positions,
+            ghost_pos_batch=ghost_pos_batch,
+            gmap_vp_ids_batch=gmap_vp_ids_batch,
+            nav_logits=nav_logits,
+            alpha=alpha,
+        )
 
     
 
@@ -1013,7 +1037,15 @@ class RLTrainer(BaseVLNCETrainer):
 
         map_config={'hfov':hfov,'vfov':vfov,'global_dim':(512,512),'grid_dim':(192,192),'heatmap_size':192,'cell_size':0.05,'img_segm_size':(128,128),'spatial_labels':3,'object_labels':27,'img_size':[256,256],'occupancy_height_thresh':-1.0,'norm_depth':True}
         # 3d info
-        xs, ys = torch.tensor(np.array(np.meshgrid(np.linspace(-1,1,map_config['img_size'][0]), np.linspace(1,-1,map_config['img_size'][1]))), device='cuda')
+        xs, ys = torch.tensor(
+            np.array(
+                np.meshgrid(
+                    np.linspace(-1, 1, map_config['img_size'][0]),
+                    np.linspace(1, -1, map_config['img_size'][1]),
+                )
+            ),
+            device=self.device,
+        )
 
         xs = xs.reshape(1,map_config['img_size'][0],map_config['img_size'][1])
         ys = ys.reshape(1,map_config['img_size'][0],map_config['img_size'][1])
@@ -1039,14 +1071,14 @@ class RLTrainer(BaseVLNCETrainer):
         if hasattr(self.policy.net, 'module'):
             policy_net = self.policy.net.module
 
-        loss_im = torch.tensor(0.0, dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
-        loss_ob = torch.tensor(0.0, dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
-        loss_action = torch.tensor(0.0, dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
-        loss_prob = torch.tensor(0.0, dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
-        loss_ac_im = torch.tensor(0.0, dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
-        head_path = []
-        real_obser_seq = []
-        im_obser_seq = []
+        loss_im = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        loss_ob = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        loss_action = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        loss_prob = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        loss_ac_im = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        head_paths = [[] for _ in range(self.batch_size)]
+        real_obser_seqs = [[] for _ in range(self.batch_size)]
+        im_obser_seqs = [[] for _ in range(self.batch_size)]
         posterior = None
         prior = None
         pred_cur_position = None
@@ -1073,7 +1105,7 @@ class RLTrainer(BaseVLNCETrainer):
 
             policy_net.action_step = stepk + 1
             policy_net.positions = positions
-            origin_position = copy.deepcopy(positions[0])
+            origin_positions = positions_to_tensor(positions, self.device)
             policy_net.headings = [(heading+2*math.pi)%(2*math.pi) for heading in headings]
 
             with torch.no_grad():
@@ -1115,8 +1147,6 @@ class RLTrainer(BaseVLNCETrainer):
                         ################
 
                         viz_img = img
-                        new_position = torch.tensor(positions[b])
-
                         img = torch.tensor(img).to(self.device)
                         
                         depth = torch.tensor(depth).to(self.device)
@@ -1193,7 +1223,7 @@ class RLTrainer(BaseVLNCETrainer):
                         turn_batch = apply_obs_transforms_batch(turn_batch, self.obs_transforms)
                         for k in turn_batch:
                             for b in range(batch_size):
-                                if turn_observations[b] == None:                            
+                                if turn_observations[b] is None:
                                     turn_batch[k] = torch.cat([turn_batch[k][:b],batch[k][b:b+1],turn_batch[k][b:]],0)
 
                         # update the feature field
@@ -1221,11 +1251,11 @@ class RLTrainer(BaseVLNCETrainer):
                 step_occup_grid_maps = utils.crop_grid(grid=step_occup_grid_sseg, crop_size=map_config['grid_dim'])
                 step_segm_grid_maps = utils.crop_grid(grid=step_segm_grid_sseg, crop_size=map_config['grid_dim'])               
 
-                predicted_occup_grid_maps =  self.policy.net.module.occupancy_map_predictor(step_occup_grid_maps.unsqueeze(1))
+                predicted_occup_grid_maps = policy_net.occupancy_map_predictor(step_occup_grid_maps.unsqueeze(1))
                 step_segm_occup_grid_maps = torch.cat((step_segm_grid_maps,predicted_occup_grid_maps),dim=-3)
-                predicted_segm_grid_maps = self.policy.net.module.semantic_map_predictor(step_segm_occup_grid_maps.unsqueeze(1))
+                predicted_segm_grid_maps = policy_net.semantic_map_predictor(step_segm_occup_grid_maps.unsqueeze(1))
                 step_segm_occup_grid_maps = torch.cat((predicted_segm_grid_maps.unsqueeze(1),predicted_occup_grid_maps.unsqueeze(1)),dim=-3)
-                waypoint_grid_maps = self.policy.net.module.waypoint_predictor(step_segm_occup_grid_maps).view(batch_size,1,map_config['grid_dim'][0],map_config['grid_dim'][1]).squeeze(1)
+                waypoint_grid_maps = policy_net.waypoint_predictor(step_segm_occup_grid_maps).view(batch_size,1,map_config['grid_dim'][0],map_config['grid_dim'][1]).squeeze(1)
 
                 for b in range(batch_size):
                     waypoint_grid_maps[b] = waypoint_grid_maps[b] - waypoint_grid_maps[b].min()
@@ -1337,8 +1367,8 @@ class RLTrainer(BaseVLNCETrainer):
                 )
 
             
-            prev_position = torch.tensor(origin_position)
-            delta_pos = new_position - prev_position
+            current_positions = positions_to_tensor(positions, self.device)
+            delta_pos = current_positions - origin_positions
 
             
             
@@ -1362,21 +1392,18 @@ class RLTrainer(BaseVLNCETrainer):
                         ) # delta_p based on real state
             
             
-            if stepk > 0 and prior != None: # Posterior and prior matching loss
+            if stepk > 0 and prior is not None: # Posterior and prior matching loss
                 loss_prob = self.problistic_loss(prior, posterior)
 
-            if stepk > 0 and pred_cur_position != None: # Action prediction loss
-                loss_action = self.action_loss(new_position.float(), pred_cur_position.float())
+            if stepk > 0 and pred_cur_position is not None: # Action prediction loss
+                loss_action = self.action_loss(current_positions.float(), pred_cur_position.float())
 
             if stepk > 1:
-                real_obser_seq.append(obser_mean.clone())
-                real_obser = np.vstack([p.detach().cpu().numpy() for p in real_obser_seq])
-				## update 
-				real_obser_tensor = torch.stack(real_obser_seq, dim=0)   # (T, D)
+                for env_idx in range(batch_size):
+                    real_obser_seqs[env_idx].append(obser_mean[env_idx].clone())
 
 
-            pred_cur_position = new_position.unsqueeze(0) + wm_outputs.to('cpu') # 
-            pred_cur_position = pred_cur_position.squeeze(0)
+            pred_cur_position = current_positions + wm_outputs.to(self.device)
 
             posterior = {
                                 'mu': mu_posterior,
@@ -1409,119 +1436,117 @@ class RLTrainer(BaseVLNCETrainer):
                 cand_pos.append(cand_pos_i)
             
 
-            # NEW FOR IMAGNINATION----------------------------------------------------------------------------------------
-            # imagine_T = 2
-            head_path.append(new_position.clone()) 
-            imagine_path = deepcopy(head_path)
-         
+            for env_idx in range(batch_size):
+                head_paths[env_idx].append(current_positions[env_idx].detach().clone())
 
-                
-            
-           
-            if mode == 'train' and stepk !=0: # and stepk % 2==0:
+            if mode == 'train' and stepk != 0: # and stepk % 2==0:
                 curr_eps = self.envs.current_episodes()
+                prior_mu, prior_sigma = [], []
+                combined_pano = torch.cat((vis_embeds, pos_embedding), dim=-1)
+
                 for i in range(self.envs.num_envs):
-                    # info = infos[i]
-                    # head_path = np.array(info['position']['position']) #
                     ep_id = curr_eps[i].episode_id
-                    gt_path_1 = np.array(self.gt_data[str(ep_id)]['locations']).astype(np.float)
-                    # find the nearest real point
-                 
-                    gt_path_tensor = torch.from_numpy(gt_path_1)  # 
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    
-                    gt_path_tensor = gt_path_tensor.to(device)  #
-                    current_coord = new_position.unsqueeze(0)
-                    current_coord = current_coord.to(device)
-                    nearest_coord, nearest_index, distance = self.find_nearest_coord_torch(current_coord, gt_path_tensor) # Find the nearest ground truth coordinate to the predicted current position
-		    # This ensures the predicted next location aligns with the true trajectory to avoid drifting off-path.
+                    gt_path_1 = np.array(self.gt_data[str(ep_id)]['locations']).astype(np.float32)
+                    gt_path_tensor = torch.from_numpy(gt_path_1).to(self.device)
+                    current_coord = current_positions[i].unsqueeze(0)
+                    nearest_coord, nearest_index, _ = self.find_nearest_coord_torch(current_coord, gt_path_tensor)
 
-                    combined_pano =  torch.cat((vis_embeds, pos_embedding), dim=-1) # 1* 1536 
-                    self.memory_vft_pos.push(keys=vis_embeds.detach().cpu().numpy(), logits=combined_pano.detach().cpu().numpy()) # Online Evolution for CEM
-                    
-                        
+                    env_vis_embeds = vis_embeds[i:i+1]
+                    env_combined_pano = combined_pano[i:i+1]
+                    self.memory_vft_pos.push(
+                        keys=env_vis_embeds.detach().cpu().numpy(),
+                        logits=env_combined_pano.detach().cpu().numpy(),
+                    )
+
+                    imagine_path = list(head_paths[i])
+
                     for stepi in range(self.imagine_T):  # Forsight prediction
-                        # ---------------- Memory retrieval (kept unchanged, numpy OK) ----------------
                         enhanced_pano_embeds = self.memory_vft_pos.retrieve_prompt_add_avg(
-                            avg_pano_embeds=vis_embeds.detach().cpu().numpy(),
-                            combined=combined_pano.detach().cpu().numpy()
-                        )
+                            avg_pano_embeds=env_vis_embeds.detach().cpu().numpy(),
+                            combined=env_combined_pano.detach().cpu().numpy(),
+                        ).to(self.device)
 
-                        # ---------------- Imagination step ----------------
                         imagine_outputs, imagine_state, mu_prior, sigma_prior = self.policy.net(
                             mode="imagination",
                             pred_pano_embeds=enhanced_pano_embeds,
                         )
 
                         if stepi == 0:
-                            prior = {'mu': mu_prior, 'sigma': sigma_prior}
+                            prior_mu.append(mu_prior)
+                            prior_sigma.append(sigma_prior)
 
-                        # ---------------- Observation prediction ----------------
                         im_observation = self.policy.net(
                             mode="observation",
                             pred_pano_embeds=imagine_state,
-                        )                       # <-- Tensor, keep computation graph!
-                        im_observation_cpu = im_observation.detach().cpu().numpy()
+                        )
+                        im_obser_seqs[i].append(im_observation.squeeze(0))
+                        im_obser_np = np.vstack(
+                            [x.detach().cpu().numpy() for x in im_obser_seqs[i]]
+                        )
 
-                        im_obser_seq.append(im_observation)  # <-- DO NOT detach here!
-
-                        # numpy version for fastdtw only
-                        im_obser_np = np.vstack([x.detach().cpu().numpy() for x in im_obser_seq])
-
-                        # ---------------- ob-DTW (reconstructed obs vs real obs) ----------------
-                        if stepk >= 4 and (2 * stepk - 8) >= 0:
-                            if (stepk - 4) >= 0 and (stepk - 3) <= real_obser.shape[0] \
-                            and (2 * stepk - 8) >= 0 and (2 * stepk - 7) <= im_obser_np.shape[0]:
-
-                                LEN = 2
+                        real_obser_seq = real_obser_seqs[i]
+                        if stepk >= 4 and (2 * stepk - 8) >= 0 and len(real_obser_seq) > 0:
+                            real_obser = np.vstack(
+                                [x.detach().cpu().numpy() for x in real_obser_seq]
+                            )
+                            if (
+                                (stepk - 4) >= 0
+                                and (stepk - 3) <= real_obser.shape[0]
+                                and (2 * stepk - 8) >= 0
+                                and (2 * stepk - 7) <= im_obser_np.shape[0]
+                            ):
+                                length = 2
                                 real_seg_np = real_obser[stepk - 4: stepk - 3]
                                 im_seg_np = im_obser_np[2 * stepk - 8: 2 * stepk - 7]
-
-                                # ★ origin DTW (not differentiable)
-                                ob_dtw_distance = fastdtw(im_seg_np, real_seg_np, dist=NDTW.euclidean_distance)[0]
-                                ob_dtw_tensor = torch.tensor(ob_dtw_distance, device=im_observation.device)
-                                ndtw_ob = torch.exp(-ob_dtw_tensor / (LEN * 3.0))
+                                ob_dtw_distance = fastdtw(
+                                    im_seg_np, real_seg_np, dist=NDTW.euclidean_distance
+                                )[0]
+                                ob_dtw_tensor = torch.tensor(
+                                    ob_dtw_distance, device=im_observation.device
+                                )
+                                ndtw_ob = torch.exp(-ob_dtw_tensor / (length * 3.0))
                                 loss_ob += 1.0 - ndtw_ob
 
-                                # ★ Surrogate Gradient
-                                real_seg_tensor = real_obser_tensor[stepk - 4: stepk - 3]  # (1, D)
-                                im_seg_tensor = im_observation                           # predicted obs tensor
-                                surrogate_ob = torch.mean((im_seg_tensor - real_seg_tensor)**2)
-                                loss_ob += 0.01 * surrogate_ob   # hyperparameter
+                                real_obser_tensor = torch.stack(real_obser_seq, dim=0)
+                                real_seg_tensor = real_obser_tensor[stepk - 4: stepk - 3]
+                                surrogate_ob = torch.mean(
+                                    (im_observation - real_seg_tensor) ** 2
+                                )
+                                loss_ob += 0.01 * surrogate_ob
 
-
-                        # ---------------- Position rollout ----------------
-                        cur_position = new_position.unsqueeze(0) + imagine_outputs
-                        cur_position = cur_position.squeeze(0)
-
+                        cur_position = current_positions[i] + imagine_outputs.squeeze(0)
                         if nearest_coord is not None:
-                            loss_ac_im += self.action_loss(cur_position.float(), nearest_coord.float())
+                            loss_ac_im += self.action_loss(
+                                cur_position.unsqueeze(0).float(),
+                                nearest_coord.unsqueeze(0).float(),
+                            )
 
-                        imagine_path.append(cur_position)  # Tensor, keep grad
-
-                        # move along gt path
+                        imagine_path.append(cur_position)
                         cur_position = nearest_coord.clone()
                         nearest_coord = self.get_next_coord(nearest_index, gt_path_tensor)
-
-                        # numpy version for fastdtw
-                        im_path_np = np.vstack([p.detach().cpu().numpy() for p in imagine_path])
-
-                        # ---------------- im-DTW (imagined path vs GT path) ----------------
-                        dtw_distance = fastdtw(im_path_np, gt_path_1, dist=NDTW.euclidean_distance)[0]
-                        dtw_tensor = torch.tensor(dtw_distance, device=cur_position.device)
+                        im_path_np = np.vstack(
+                            [p.detach().cpu().numpy() for p in imagine_path]
+                        )
+                        dtw_distance = fastdtw(
+                            im_path_np, gt_path_1, dist=NDTW.euclidean_distance
+                        )[0]
+                        dtw_tensor = torch.tensor(dtw_distance, device=self.device)
                         ndtw = torch.exp(-dtw_tensor / (len(gt_path_1) * 3.0))
+                        loss_im += 1.0 - ndtw
 
-                        if not isinstance(loss_im, torch.Tensor):
-                            loss_im = torch.tensor(0.0, device=cur_position.device)
-
-                        loss_im += 1.0 - ndtw         # ★ origin fastdtw loss
-
-                        # ★ new Surrogate Gradient
-                        # build tensor version of imagined path
-                        im_path_tensor = torch.stack(imagine_path, dim=0)  # (T, D)
+                        im_path_tensor = torch.stack(imagine_path, dim=0)
                         gt_path_tensor_trim = gt_path_tensor[:im_path_tensor.shape[0]]
-                        surrogate_im = torch.mean((im_path_tensor - gt_path_tensor_trim)**2)
-                        loss_im += 0.01 * surrogate_im  # λ hyperparameter
+                        surrogate_im = torch.mean(
+                            (im_path_tensor - gt_path_tensor_trim) ** 2
+                        )
+                        loss_im += 0.01 * surrogate_im
+
+                prior = None
+                if len(prior_mu) > 0:
+                    prior = {
+                        'mu': torch.cat(prior_mu, dim=0),
+                        'sigma': torch.cat(prior_sigma, dim=0),
+                    }
 
 
                        
@@ -1775,9 +1800,9 @@ class RLTrainer(BaseVLNCETrainer):
                     metric['ndtw'] = np.exp(-dtw_distance / (len(gt_path) * 3.))
                     metric['sdtw'] = metric['ndtw'] * metric['success']
                     metric['ghost_cnt'] = self.gmaps[i].ghost_cnt
-                    print(metric['oracle_success'],metric['success'],metric['spl'])
                     self.stat_eps[ep_id] = metric
-                    self.pbar.update()
+                    if self.pbar is not None:
+                        self.pbar.update()
 
             # record path
             if mode == 'infer':
@@ -1803,10 +1828,17 @@ class RLTrainer(BaseVLNCETrainer):
                             })
                     self.path_eps[ep_id] = self.path_eps[ep_id][:500]
                     self.path_eps[ep_id][-1]['stop'] = True
-                    self.pbar.update()
+                    if self.pbar is not None:
+                        self.pbar.update()
 
             # pause env
             if sum(dones) > 0:
+                keep_indices = [i for i, done in enumerate(dones) if not done]
+                pred_cur_position = filter_batch_tensor_rows(
+                    pred_cur_position, keep_indices
+                )
+                posterior = filter_batch_distribution_rows(posterior, keep_indices)
+                prior = filter_batch_distribution_rows(prior, keep_indices)
                 for i in reversed(list(range(len(dones)))):
                     if dones[i]:
                         not_done_index.pop(i)
@@ -1830,8 +1862,10 @@ class RLTrainer(BaseVLNCETrainer):
                         # graph stop
                         self.gmaps.pop(i)
                         prev_vp.pop(i)
+                        head_paths.pop(i)
+                        real_obser_seqs.pop(i)
+                        im_obser_seqs.pop(i)
 
-            
             if self.envs.num_envs == 0:
                 break
 
@@ -1849,9 +1883,9 @@ class RLTrainer(BaseVLNCETrainer):
             loss = ml_weight * loss.float() / total_actions
             self.loss += loss # * decay
             self.loss += loss_im / total_actions #for ablation# * (1-decay)
-            if loss_ob != None:
+            if loss_ob is not None:
                 self.loss += loss_ob.float() / (total_actions * 2)
-            if loss_prob != None:
+            if loss_prob is not None:
                 self.loss += loss_prob.float() / (total_actions * 1000)
             if loss_action !=None:
                 self.loss += loss_action.float() / total_actions #for ablation

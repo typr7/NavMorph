@@ -266,9 +266,9 @@ class CLIPEncoder(nn.Module):
             # state_dict = scripted_model.state_dict()
             # self.model.load_state_dict(state_dict)
             self.model.load_state_dict(torch.load('/data/ViT-B-'+str(patch_size)+'.pt', map_location = torch.device('cpu')).state_dict(),strict=False)
-            self.model = self.model.to('cuda')  # transfer to GPU 
         elif patch_size == 32:
             self.model.load_state_dict(torch.jit.load('data/ViT-B-'+str(patch_size)+'.pt', map_location = torch.device('cpu')).state_dict(),strict=False)
+        self.model = self.model.to(device)
 
         for param in self.model.parameters():
             param.requires_grad_(False)
@@ -290,7 +290,8 @@ class CLIPEncoder(nn.Module):
 
         rgb_observations = observations["rgb"].permute(0, 3, 1, 2)
         rgb_observations = self.rgb_transform(rgb_observations)
-        rgb_observations = rgb_observations.to('cuda') #new
+        model_device = next(self.model.parameters()).device
+        rgb_observations = rgb_observations.to(model_device)
         
         if fine_grained_fts:
             output = self.model(rgb_observations.contiguous())

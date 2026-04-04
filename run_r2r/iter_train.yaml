@@ -4,7 +4,7 @@ TORCH_GPU_ID: 0
 TORCH_GPU_IDS: [0]
 TRAINER_NAME: SS-ETP
 GPU_NUMBERS: 1
-NUM_ENVIRONMENTS: 1
+NUM_ENVIRONMENTS: 1 # per-rank environment count
 TENSORBOARD_DIR: data/logs/tensorboard_dirs/
 CHECKPOINT_FOLDER: data/logs/checkpoints/
 EVAL_CKPT_PATH_DIR: data/logs/checkpoints/
@@ -31,7 +31,7 @@ IL:
   iters: 30000
   log_every: 500
   lr: 1e-5
-  batch_size: 1 # equal to NUM_ENVIRONMENTS
+  batch_size: 1 # per-rank batch size, should match NUM_ENVIRONMENTS
   ml_weight: 1.0
   expert_policy: spl
 
@@ -70,4 +70,3 @@ MODEL:
     directional: 128
   INSTRUCTION_ENCODER:
     bidirectional: True
-
