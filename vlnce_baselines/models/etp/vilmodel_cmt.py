@@ -899,9 +899,11 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
             
 
                 impulse = 0.99
-                ft = gmap_embeds.squeeze(0)
-
-                best_ft = ft[max_idx]
+                batch_idx = torch.arange(
+                    gmap_embeds.size(0), device=gmap_embeds.device
+                )
+                best_ft = gmap_embeds[batch_idx, max_idx]
+                best_ft = best_ft.mean(dim=0, keepdim=True)
                 W_update = impulse * W + (1-impulse) * best_ft
 
                 #delta = W_update - W
