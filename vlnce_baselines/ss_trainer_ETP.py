@@ -110,6 +110,50 @@ class RLTrainer(BaseVLNCETrainer):
         self.problistic_loss = KLLoss(alpha=0.5)
         self.action_loss = RegressionLoss(norm=2)
 
+    def _log_checkpoint_coverage(self, label, state_dict, incompatible_keys, sample_size=20):
+        if getattr(self.config, "local_rank", 0) != 0:
+            return
+
+        missing_keys = list(getattr(incompatible_keys, "missing_keys", []))
+        unexpected_keys = list(getattr(incompatible_keys, "unexpected_keys", []))
+        model_key_count = len(self.policy.state_dict())
+        ckpt_key_count = len(state_dict)
+        matched_model_keys = model_key_count - len(missing_keys)
+        used_ckpt_keys = ckpt_key_count - len(unexpected_keys)
+
+        logger.info(
+            "%s coverage | model keys: %d | checkpoint keys: %d | matched model keys: %d | used checkpoint keys: %d | missing: %d | unexpected: %d",
+            label,
+            model_key_count,
+            ckpt_key_count,
+            matched_model_keys,
+            used_ckpt_keys,
+            len(missing_keys),
+            len(unexpected_keys),
+        )
+
+        if missing_keys:
+            logger.info(
+                "%s missing keys sample (%d/%d): %s",
+                label,
+                min(sample_size, len(missing_keys)),
+                len(missing_keys),
+                missing_keys[:sample_size],
+            )
+        if unexpected_keys:
+            logger.info(
+                "%s unexpected keys sample (%d/%d): %s",
+                label,
+                min(sample_size, len(unexpected_keys)),
+                len(unexpected_keys),
+                unexpected_keys[:sample_size],
+            )
+
+    def _load_policy_checkpoint(self, state_dict, label, sample_size=20):
+        incompatible_keys = self.policy.load_state_dict(state_dict, strict=False)
+        self._log_checkpoint_coverage(label, state_dict, incompatible_keys, sample_size=sample_size)
+        return incompatible_keys
+
 
     def _make_dirs(self):
         if self.config.local_rank == 0:
@@ -318,7 +362,11 @@ class RLTrainer(BaseVLNCETrainer):
         for key in b:
             if 'rgb_encoder' in key:
                 ckpt_dict['state_dict'].pop(key) 
-        self.policy.load_state_dict(ckpt_dict["state_dict"],strict=False)
+        self._load_policy_checkpoint(
+            ckpt_dict["state_dict"],
+            label="cwp_predictor checkpoint",
+            sample_size=10,
+        )
       
 
         ckpt_dict = self.load_checkpoint('/data/data1/wzh/NavMorph/pretrained/NeRF_p16_8x8.pth', map_location="cpu")
@@ -326,11 +374,19 @@ class RLTrainer(BaseVLNCETrainer):
         for key in b:
             if 'rgb_encoder' in key:
                 ckpt_dict['state_dict'].pop(key) 
-        self.policy.load_state_dict(ckpt_dict["state_dict"],strict=False)
+        self._load_policy_checkpoint(
+            ckpt_dict["state_dict"],
+            label="NeRF_p16_8x8 checkpoint",
+            sample_size=10,
+        )
 
         if load_from_ckpt:
             ckpt_dict = self.load_checkpoint(config.IL.ckpt_to_load, map_location="cpu")           
-            self.policy.load_state_dict(ckpt_dict["state_dict"],strict=False)
+            self._load_policy_checkpoint(
+                ckpt_dict["state_dict"],
+                label=f"policy checkpoint {config.IL.ckpt_to_load}",
+                sample_size=30,
+            )
             start_iter = ckpt_dict["iteration"]
             if config.IL.is_requeue:
                 try:
