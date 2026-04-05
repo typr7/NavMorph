@@ -34,10 +34,10 @@ TRAIN_MAIN_EQUIV="${TRAIN_MAIN_EQUIV:-True}"
 TRAIN_ML_WEIGHT="${TRAIN_ML_WEIGHT:-1.0}"
 TRAIN_SAMPLE_RATIO="${TRAIN_SAMPLE_RATIO:-0.75}"
 TRAIN_DECAY_INTERVAL="${TRAIN_DECAY_INTERVAL:-4000}"
-TRAIN_LOAD_FROM_CKPT="${TRAIN_LOAD_FROM_CKPT:-True}"
+TRAIN_LOAD_FROM_CKPT="${TRAIN_LOAD_FROM_CKPT:-False}"
 TRAIN_IS_REQUEUE="${TRAIN_IS_REQUEUE:-True}"
 TRAIN_WAYPOINT_AUG="${TRAIN_WAYPOINT_AUG:-True}"
-TRAIN_CKPT="${TRAIN_CKPT:-data/checkpoints/ckpt.iter25000.pth}"
+TRAIN_CKPT="${TRAIN_CKPT:-}"
 
 MODEL_PRETRAINED_PATH="${MODEL_PRETRAINED_PATH:-pretrained/model_step_100000.pt}"
 ALLOW_SLIDING="${ALLOW_SLIDING:-True}"
@@ -72,8 +72,15 @@ train_flags=(
   IL.load_from_ckpt "${TRAIN_LOAD_FROM_CKPT}"
   IL.is_requeue "${TRAIN_IS_REQUEUE}"
   IL.waypoint_aug "${TRAIN_WAYPOINT_AUG}"
-  IL.ckpt_to_load "${TRAIN_CKPT}"
 )
+
+if [[ "${TRAIN_LOAD_FROM_CKPT}" == "True" ]]; then
+  if [[ -z "${TRAIN_CKPT}" ]]; then
+    echo "Error: TRAIN_LOAD_FROM_CKPT=True but TRAIN_CKPT is empty. Please set TRAIN_CKPT to an existing checkpoint path." >&2
+    exit 1
+  fi
+  train_flags+=(IL.ckpt_to_load "${TRAIN_CKPT}")
+fi
 
 eval_flags=(
   --run-type eval
