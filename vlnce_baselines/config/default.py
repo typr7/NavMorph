@@ -65,6 +65,7 @@ _C.IL.inflection_weight_coef = 3.2
 _C.IL.waypoint_aug = False
 _C.IL.load_from_ckpt = False
 _C.IL.ckpt_to_load = "data/checkpoints/ckpt.0.pth"
+_C.IL.main_equiv_training = True
 # if True, loads the optimizer state, epoch, and step_id from the ckpt dict.
 _C.IL.is_requeue = False
 # it True, start training from the saved epoch

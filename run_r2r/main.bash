@@ -30,6 +30,7 @@ TORCH_GPU_IDS="${TORCH_GPU_IDS:-$DEFAULT_GPU_ID_LIST}"
 TRAIN_ITERS="${TRAIN_ITERS:-29000}"
 TRAIN_LR="${TRAIN_LR:-1e-5}"
 TRAIN_LOG_EVERY="${TRAIN_LOG_EVERY:-500}"
+TRAIN_MAIN_EQUIV="${TRAIN_MAIN_EQUIV:-True}"
 TRAIN_ML_WEIGHT="${TRAIN_ML_WEIGHT:-1.0}"
 TRAIN_SAMPLE_RATIO="${TRAIN_SAMPLE_RATIO:-0.75}"
 TRAIN_DECAY_INTERVAL="${TRAIN_DECAY_INTERVAL:-4000}"
@@ -64,6 +65,7 @@ train_flags=(
   IL.iters "${TRAIN_ITERS}"
   IL.lr "${TRAIN_LR}"
   IL.log_every "${TRAIN_LOG_EVERY}"
+  IL.main_equiv_training "${TRAIN_MAIN_EQUIV}"
   IL.ml_weight "${TRAIN_ML_WEIGHT}"
   IL.sample_ratio "${TRAIN_SAMPLE_RATIO}"
   IL.decay_interval "${TRAIN_DECAY_INTERVAL}"
@@ -91,6 +93,10 @@ infer_flags=(
 launcher=(python run.py)
 if [[ "${GPU_NUMBERS}" -gt 1 ]]; then
   launcher=(torchrun --standalone --nproc_per_node "${GPU_NUMBERS}" run.py)
+fi
+
+if [[ "${TRAIN_MAIN_EQUIV}" == "True" && "${NUM_ENVIRONMENTS}" -gt 1 ]]; then
+  echo "Warning: main-equivalent training is only best-effort when NUM_ENVIRONMENTS>1; use NUM_ENVIRONMENTS=1 for closest parity." >&2
 fi
 
 case "${MODE}" in

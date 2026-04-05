@@ -47,6 +47,26 @@ def normalize_gpu_id_list(
     return [int(gpu_ids)]
 
 
+def shard_sequence_by_rank(
+    items: Sequence[object], rank: int, world_size: int
+) -> Sequence[object]:
+    if world_size < 1:
+        raise ValueError(f"world_size must be >= 1, got {world_size}")
+    if rank < 0 or rank >= world_size:
+        raise ValueError(
+            f"rank must be in [0, {world_size}), got rank={rank}"
+        )
+    return list(items)[rank::world_size]
+
+
+def ddp_mean_equivalent_scale(world_size: int, global_count: float) -> float:
+    if world_size < 1:
+        raise ValueError(f"world_size must be >= 1, got {world_size}")
+    if global_count <= 0:
+        raise ValueError(f"global_count must be > 0, got {global_count}")
+    return float(world_size) / float(global_count)
+
+
 def validate_parallel_config(
     gpu_numbers: int,
     num_environments: int,

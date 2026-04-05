@@ -32,6 +32,7 @@ IL:
   log_every: 500
   lr: 1e-5
   batch_size: 1 # per-rank batch size, should match NUM_ENVIRONMENTS
+  main_equiv_training: True # best-effort parity with main when scaling beyond 1 GPU
   ml_weight: 1.0
   expert_policy: spl
 

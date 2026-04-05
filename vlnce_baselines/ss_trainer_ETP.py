@@ -38,9 +38,11 @@ from vlnce_baselines.common.base_il_trainer import BaseVLNCETrainer
 from vlnce_baselines.common.env_utils import construct_envs, construct_envs_for_rl, is_slurm_batch_job
 from vlnce_baselines.common.parallel_utils import (
     batched_posref_update,
+    ddp_mean_equivalent_scale,
     filter_batch_distribution_rows,
     filter_batch_tensor_rows,
     positions_to_tensor,
+    shard_sequence_by_rank,
 )
 from vlnce_baselines.common.utils import extract_instruction_tokens
 from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST, calculate_vp_rel_pos_fts
@@ -196,6 +198,91 @@ class RLTrainer(BaseVLNCETrainer):
 
         self.prompt = self.prompt.to(self.device)
 
+    def _warn_training_parity_limits(self):
+        if not getattr(self.config.IL, "main_equiv_training", False):
+            return
+        if self.local_rank != 0:
+            return
+        if self.config.NUM_ENVIRONMENTS > 1:
+            logger.warning(
+                "IL.main_equiv_training=True is only best-effort when NUM_ENVIRONMENTS=%d; "
+                "use NUM_ENVIRONMENTS=1 and IL.batch_size=1 per rank for closest parity with main training.",
+                self.config.NUM_ENVIRONMENTS,
+            )
+
+    def _collect_rank_train_episode_ids(self):
+        if self.world_size <= 1 or not getattr(self.config.IL, "main_equiv_training", False):
+            return None
+
+        split = self.config.TASK_CONFIG.DATASET.SPLIT
+        if 'rxr' in self.config.BASE_TASK_CONFIG_PATH:
+            from habitat_extensions.task import ALL_ROLES_MASK, RxRVLNCEDatasetV1
+
+            if "{role}" in self.config.TASK_CONFIG.DATASET.DATA_PATH:
+                ep_data = {"episodes": []}
+                for role in RxRVLNCEDatasetV1.annotation_roles:
+                    if (
+                        ALL_ROLES_MASK not in self.config.TASK_CONFIG.DATASET.ROLES
+                        and role not in self.config.TASK_CONFIG.DATASET.ROLES
+                    ):
+                        continue
+                    with gzip.open(
+                        self.config.TASK_CONFIG.DATASET.DATA_PATH.format(
+                            split=split, role=role
+                        ),
+                        "rt",
+                    ) as f:
+                        role_data = json.load(f)
+                    ep_data["episodes"].extend(role_data["episodes"])
+            else:
+                with gzip.open(
+                    self.config.TASK_CONFIG.DATASET.DATA_PATH.format(split=split),
+                    "rt",
+                ) as f:
+                    ep_data = json.load(f)
+        else:
+            with gzip.open(
+                self.config.TASK_CONFIG.DATASET.DATA_PATH.format(split=split),
+                "rt",
+            ) as f:
+                ep_data = json.load(f)
+
+        episode_ids = [episode["episode_id"] for episode in ep_data["episodes"]]
+        rank_episode_ids = shard_sequence_by_rank(
+            episode_ids, rank=self.local_rank, world_size=self.world_size
+        )
+        if len(rank_episode_ids) == 0:
+            raise RuntimeError(
+                f"Rank {self.local_rank} received no training episodes from split={split} "
+                f"under world_size={self.world_size}."
+            )
+        logger.info(
+            "LOCAL RANK: %d, TRAIN EPISODES IN SHARD: %d / %d",
+            self.local_rank,
+            len(rank_episode_ids),
+            len(episode_ids),
+        )
+        return rank_episode_ids
+
+    def _distributed_scalar_sum(self, value: float) -> float:
+        total = torch.tensor(float(value), dtype=torch.float32, device=self.device)
+        if self.world_size > 1:
+            distr.all_reduce(total, op=distr.ReduceOp.SUM)
+        return float(total.item())
+
+    def _sync_main_equiv_training_state(self):
+        if self.world_size <= 1 or not getattr(self.config.IL, "main_equiv_training", False):
+            return
+
+        policy_net = self.policy.net
+        if hasattr(policy_net, "module"):
+            policy_net = policy_net.module
+
+        adaptive_head = policy_net.global_sap_head.net[4]
+        for tensor in (adaptive_head.weight.data, adaptive_head.bias.data):
+            distr.all_reduce(tensor, op=distr.ReduceOp.SUM)
+            tensor.div_(self.world_size)
+
     def _set_config(self):
         self.split = self.config.TASK_CONFIG.DATASET.SPLIT
         self.config.defrost()
@@ -226,6 +313,12 @@ class RLTrainer(BaseVLNCETrainer):
         self.config.RL.POLICY.OBS_TRANSFORMS.CENTER_CROPPER_PER_SENSOR.SENSOR_CROPS = crop_config
         self.config.TASK_CONFIG = task_config
         self.config.SENSORS = task_config.SIMULATOR.AGENT_0.SENSORS
+        if self.config.IL.batch_size != self.config.NUM_ENVIRONMENTS:
+            raise ValueError(
+                "For SS-ETP training, IL.batch_size must match NUM_ENVIRONMENTS per rank: "
+                f"IL.batch_size={self.config.IL.batch_size}, "
+                f"NUM_ENVIRONMENTS={self.config.NUM_ENVIRONMENTS}"
+            )
         if self.config.VIDEO_OPTION:
             self.config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP_VLNCE")
             self.config.TASK_CONFIG.TASK.MEASUREMENTS.append("DISTANCE_TO_GOAL")
@@ -260,7 +353,7 @@ class RLTrainer(BaseVLNCETrainer):
 
         self._set_process_local_device()
 
-    def _init_envs(self):
+    def _init_envs(self, episodes_allowed=None):
         # for DDP to load different data
         self.config.defrost()
         self.config.TASK_CONFIG.SEED = self.config.TASK_CONFIG.SEED + self.local_rank
@@ -269,6 +362,7 @@ class RLTrainer(BaseVLNCETrainer):
         self.envs = construct_envs(
             self.config, 
             get_env_class(self.config.ENV_NAME),
+            episodes_allowed=episodes_allowed,
             auto_reset_done=False
         )
         env_num = self.envs.num_envs
@@ -626,6 +720,7 @@ class RLTrainer(BaseVLNCETrainer):
 
     def train(self):
         self._set_config()
+        self._warn_training_parity_limits()
         if self.config.MODEL.task_type == 'rxr':
             self.gt_data = {}
             for role in self.config.TASK_CONFIG.DATASET.ROLES:
@@ -644,7 +739,10 @@ class RLTrainer(BaseVLNCETrainer):
                     ), "rt") as f:
                     self.gt_data.update(json.load(f))
         
-        observation_space, action_space = self._init_envs()
+        train_episode_ids = self._collect_rank_train_episode_ids()
+        observation_space, action_space = self._init_envs(
+            episodes_allowed=train_episode_ids
+        )
         start_iter = self._initialize_policy(
             self.config,
             self.config.IL.load_from_ckpt,
@@ -1945,21 +2043,36 @@ class RLTrainer(BaseVLNCETrainer):
         # decay = 0.2
 
         if mode == 'train':
-            loss = ml_weight * loss.float() / total_actions
+            if total_actions <= 0:
+                raise RuntimeError("Training rollout produced no actions.")
+
+            global_total_actions = self._distributed_scalar_sum(total_actions)
+            ddp_scale = ddp_mean_equivalent_scale(
+                world_size=self.world_size,
+                global_count=global_total_actions,
+            )
+
+            loss = ml_weight * loss.float() * ddp_scale
             self.loss += loss # * decay
-            self.loss += loss_im / total_actions #for ablation# * (1-decay)
+            self.loss += loss_im * ddp_scale #for ablation# * (1-decay)
             if loss_ob is not None:
-                self.loss += loss_ob.float() / (total_actions * 2)
+                self.loss += loss_ob.float() * ddp_scale / 2
             if loss_prob is not None:
-                self.loss += loss_prob.float() / (total_actions * 1000)
-            if loss_action !=None:
-                self.loss += loss_action.float() / total_actions #for ablation
+                self.loss += loss_prob.float() * ddp_scale / 1000
+            if loss_action is not None:
+                self.loss += loss_action.float() * ddp_scale #for ablation
+
+            self._sync_main_equiv_training_state()
+
+            logged_loss = loss.detach().clone()
+            if self.world_size > 1:
+                reduce_loss(logged_loss, self.local_rank, self.world_size)
             if self.loss == 0:
-                self.logs['IL_loss'].append(loss)
+                self.logs['IL_loss'].append(logged_loss)
             elif self.loss < 0. or self.loss > 1000.:
                 pass
             else:
-                self.logs['IL_loss'].append(loss.item())
+                self.logs['IL_loss'].append(logged_loss.item())
                 #######
            
 
