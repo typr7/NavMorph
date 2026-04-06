@@ -625,7 +625,7 @@ class RLTrainer(BaseVLNCETrainer):
 
             with autocast():
                 self.rollout('train', ml_weight, sample_ratio)
-            print(self.loss)
+            # print(self.loss)
             self.scaler.scale(self.loss).backward() # self.loss.backward()
             torch.nn.utils.clip_grad_norm_(parameters=self.policy.parameters(), max_norm=5, norm_type=2)
             self.scaler.step(self.optimizer)        # self.optimizer.step()
