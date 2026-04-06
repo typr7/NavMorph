@@ -151,12 +151,14 @@ def calculate_vp_rel_pos_fts(a, b, base_heading=0, base_elevation=0):
     xyz_dist = max(np.sqrt(dx**2 + dy**2 + dz**2), 1e-8)
 
     # the simulator's api is weired (x-y axis is transposed)
-    heading = np.arcsin(dx/xy_dist) # [-pi/2, pi/2]
+    heading_ratio = np.clip(dx / xy_dist, -1.0, 1.0)
+    heading = np.arcsin(heading_ratio) # [-pi/2, pi/2]
     if b[2] < a[2]:
         heading = np.pi - heading
     heading -= base_heading
 
-    elevation = np.arcsin(dz/xyz_dist)  # [-pi/2, pi/2]
+    elevation_ratio = np.clip(dz / xyz_dist, -1.0, 1.0)
+    elevation = np.arcsin(elevation_ratio)  # [-pi/2, pi/2]
     elevation -= base_elevation
     return heading, elevation, xyz_dist
 
