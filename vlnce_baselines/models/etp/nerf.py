@@ -151,7 +151,8 @@ def raw2feature(raw, z_vals):
     
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)).to(dists.device), 1.-alpha + 1e-10], -1), -1)[:, :-1]
     feature_map = torch.sum(weights[...,None] * feature, -2)  # [N_rays, 3]
-    feature_map = feature_map / torch.linalg.norm(feature_map, dim=-1, keepdim=True)
+    feature_norm = torch.linalg.norm(feature_map, dim=-1, keepdim=True).clamp_min(1e-12)
+    feature_map = feature_map / feature_norm
 
     depth_map = torch.sum(weights * z_vals, -1)
     disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
