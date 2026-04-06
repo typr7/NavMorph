@@ -165,6 +165,14 @@ class RLTrainer(BaseVLNCETrainer):
         self._log_checkpoint_coverage(label, normalized_state_dict, incompatible_keys, sample_size=sample_size)
         return incompatible_keys
 
+    def _normalize_module_prefix_state_dict(self, state_dict):
+        normalized_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("module."):
+                key = key[len("module."):]
+            normalized_state_dict[key] = value
+        return normalized_state_dict
+
 
     def _make_dirs(self):
         if self.config.local_rank == 0:
@@ -424,7 +432,9 @@ class RLTrainer(BaseVLNCETrainer):
         self.img_segmentor = get_img_segmentor_from_options(n_object_classes,1.0)
         self.img_segmentor = self.img_segmentor.to(self.device)
         checkpoint = torch.load("/data/data1/wzh/NavMorph/pretrained/segm.pt", map_location="cpu")
-        self.img_segmentor.load_state_dict(checkpoint['models']['img_segm_model'])         
+        self.img_segmentor.load_state_dict(
+            self._normalize_module_prefix_state_dict(checkpoint['models']['img_segm_model'])
+        )
         self.img_segmentor.eval()
 
         self.policy.net.occupancy_map_predictor = ResNetUNet(3,3,True)
