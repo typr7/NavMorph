@@ -14,12 +14,11 @@ flag1="--exp_name release_r2r
       IL.ml_weight 1.0
       IL.sample_ratio 0.75
       IL.decay_interval 4000
-      IL.load_from_ckpt True
+      IL.load_from_ckpt False
       IL.is_requeue True
       IL.waypoint_aug  True
-	  IL.ckpt_to_load data/checkpoints/ckpt.iter25000.pth
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      MODEL.pretrained_path pretrained/model_step_100000.pt
+      MODEL.pretrained_path /data/data1/wzh/NavMorph/pretrained/model_step_100000.pt
       "
 
 flag2=" --exp_name release_r2r
@@ -53,15 +52,15 @@ mode=$1
 case $mode in 
       train)
       echo "###### train mode ######"
-      CUDA_VISIBLE_DEVICES=1 python run.py $flag1
+      python run.py $flag1
       ;;
       eval)
       echo "###### eval mode ######"
       #CUDA_VISIBLE_DEVICES='5' python -m pdb run.py $flag2
-      CUDA_VISIBLE_DEVICES=1 python run.py $flag2
+      python run.py $flag2
       ;;
       infer)
       echo "###### infer mode ######"
-      CUDA_VISIBLE_DEVICES=1 python run.py $flag3
+      python run.py $flag3
       ;;
 esac
