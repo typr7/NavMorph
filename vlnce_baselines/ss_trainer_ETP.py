@@ -17,7 +17,6 @@ import time
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
-from torch.nn.parallel import DistributedDataParallel as DDP
 from copy import deepcopy
 import tqdm
 from gym import Space
@@ -44,6 +43,7 @@ from vlnce_baselines.common.parallel_utils import (
     positions_to_tensor,
     resolve_global_sap_head,
     shard_sequence_by_rank,
+    unwrap_data_parallel_module,
 )
 from vlnce_baselines.common.utils import extract_instruction_tokens
 from vlnce_baselines.models.graph_utils import GraphMap, MAX_DIST, calculate_vp_rel_pos_fts
@@ -153,8 +153,16 @@ class RLTrainer(BaseVLNCETrainer):
             )
 
     def _load_policy_checkpoint(self, state_dict, label, sample_size=20):
-        incompatible_keys = self.policy.load_state_dict(state_dict, strict=False)
-        self._log_checkpoint_coverage(label, state_dict, incompatible_keys, sample_size=sample_size)
+        normalized_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("net.module."):
+                key = "net." + key[len("net.module."):]
+            elif key.startswith("module."):
+                key = key[len("module."):]
+            normalized_state_dict[key] = value
+
+        incompatible_keys = self.policy.load_state_dict(normalized_state_dict, strict=False)
+        self._log_checkpoint_coverage(label, normalized_state_dict, incompatible_keys, sample_size=sample_size)
         return incompatible_keys
 
 
@@ -270,6 +278,16 @@ class RLTrainer(BaseVLNCETrainer):
         if self.world_size > 1:
             distr.all_reduce(total, op=distr.ReduceOp.SUM)
         return float(total.item())
+
+    def _sync_manual_gradients(self):
+        if self.world_size <= 1 or getattr(self, "_policy_uses_ddp", False):
+            return
+
+        for param in self.policy.parameters():
+            if not param.requires_grad or param.grad is None:
+                continue
+            distr.all_reduce(param.grad.data, op=distr.ReduceOp.SUM)
+            param.grad.data.div_(self.world_size)
 
     def _sync_main_equiv_training_state(self):
         if self.world_size <= 1 or not getattr(self.config.IL, "main_equiv_training", False):
@@ -405,19 +423,6 @@ class RLTrainer(BaseVLNCETrainer):
         ## Load the pre-trained img segmentation model
         self.img_segmentor = get_img_segmentor_from_options(n_object_classes,1.0)
         self.img_segmentor = self.img_segmentor.to(self.device)
-
-        if self.config.GPU_NUMBERS > 1:
-            self.img_segmentor = DDP(
-                self.img_segmentor,
-                device_ids=[self.device],
-                output_device=self.device,
-            )
-        else:
-            self.img_segmentor = torch.nn.DataParallel(
-                self.img_segmentor,
-                device_ids=[self.device],
-                output_device=self.device,
-            )
         checkpoint = torch.load("/data/data1/wzh/NavMorph/pretrained/segm.pt", map_location="cpu")
         self.img_segmentor.load_state_dict(checkpoint['models']['img_segm_model'])         
         self.img_segmentor.eval()
@@ -446,15 +451,21 @@ class RLTrainer(BaseVLNCETrainer):
         self._points2D_step = torch.transpose(_points2D_step, 0, 1) # Npoints x 2  
 
         self.policy.to(self.device)
+        self._policy_uses_ddp = False
 
         if self.config.GPU_NUMBERS > 1:
-            print('Using', self.config.GPU_NUMBERS,'GPU!')
-            # find_unused_parameters=False fix ddp bug
-            self.policy.net = DDP(self.policy.net.to(self.device), device_ids=[self.device],
-                output_device=self.device, find_unused_parameters=True, broadcast_buffers=False)
+            print('Using', self.config.GPU_NUMBERS,'GPU with manual gradient synchronization!')
+            self.policy.net = self.policy.net.to(self.device)
         else:
             self.policy.net = torch.nn.DataParallel(self.policy.net.to(self.device),
                 device_ids=[self.device], output_device=self.device)
+            self._policy_uses_ddp = False
+
+        policy_net = unwrap_data_parallel_module(self.policy.net)
+        for param in self.policy.parameters():
+            param.requires_grad = False
+        for param in policy_net.vln_bert.parameters():
+            param.requires_grad = True
 
         self.optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.policy.parameters()), lr=self.config.IL.lr)
 
@@ -788,12 +799,13 @@ class RLTrainer(BaseVLNCETrainer):
     def _train_interval(self, interval, ml_weight, sample_ratio):
         
         self.policy.eval()
-        self.policy.net.module.vln_bert.train()
+        policy_net = unwrap_data_parallel_module(self.policy.net)
+        policy_net.vln_bert.train()
 
         # Freeze all model parameters, except for those in the vln_bert module
         for param in self.policy.parameters():
             param.requires_grad = False
-        for param in self.policy.net.module.vln_bert.parameters():
+        for param in policy_net.vln_bert.parameters():
             param.requires_grad = True
         
         # for name, param in self.policy.named_parameters():
@@ -814,9 +826,12 @@ class RLTrainer(BaseVLNCETrainer):
                 self.rollout('train', ml_weight, sample_ratio)
             print(self.loss)
             self.scaler.scale(self.loss).backward() # self.loss.backward()
+            self.scaler.unscale_(self.optimizer)
+            self._sync_manual_gradients()
             torch.nn.utils.clip_grad_norm_(parameters=self.policy.parameters(), max_norm=5, norm_type=2)
             self.scaler.step(self.optimizer)        # self.optimizer.step()
             self.scaler.update()
+            self._sync_main_equiv_training_state()
 
             if self.local_rank < 1:
                 pbar.set_postfix({'iter': f'{idx+1}/{interval}'})
@@ -2068,8 +2083,6 @@ class RLTrainer(BaseVLNCETrainer):
                 self.loss += loss_prob.float() * ddp_scale / 1000
             if loss_action is not None:
                 self.loss += loss_action.float() * ddp_scale #for ablation
-
-            self._sync_main_equiv_training_state()
 
             logged_loss = loss.detach().clone()
             if self.world_size > 1:
