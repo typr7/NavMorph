@@ -28,6 +28,7 @@ filter_batch_tensor_rows = parallel_utils.filter_batch_tensor_rows
 ddp_mean_equivalent_scale = parallel_utils.ddp_mean_equivalent_scale
 positions_to_tensor = parallel_utils.positions_to_tensor
 resolve_local_rank = parallel_utils.resolve_local_rank
+resolve_global_sap_head = parallel_utils.resolve_global_sap_head
 shard_sequence_by_rank = parallel_utils.shard_sequence_by_rank
 validate_parallel_config = parallel_utils.validate_parallel_config
 
@@ -81,6 +82,30 @@ class SequenceShardingTest(unittest.TestCase):
         items = list(range(8))
         self.assertEqual(shard_sequence_by_rank(items, rank=0, world_size=2), [0, 2, 4, 6])
         self.assertEqual(shard_sequence_by_rank(items, rank=1, world_size=2), [1, 3, 5, 7])
+
+
+class ResolveGlobalSapHeadTest(unittest.TestCase):
+    class DummyModule:
+        pass
+
+    def test_resolves_direct_global_sap_head(self):
+        head = self.DummyModule()
+        model = self.DummyModule()
+        model.global_sap_head = head
+        self.assertIs(resolve_global_sap_head(model), head)
+
+    def test_resolves_nested_vln_bert_head_under_wrapper(self):
+        head = self.DummyModule()
+        vln_bert = self.DummyModule()
+        vln_bert.global_sap_head = head
+        model = self.DummyModule()
+        model.vln_bert = vln_bert
+        ddp_wrapper = self.DummyModule()
+        ddp_wrapper.module = model
+        self.assertIs(resolve_global_sap_head(ddp_wrapper), head)
+
+    def test_returns_none_if_head_is_missing(self):
+        self.assertIsNone(resolve_global_sap_head(self.DummyModule()))
 
 
 class DDPMeanEquivalentScaleTest(unittest.TestCase):

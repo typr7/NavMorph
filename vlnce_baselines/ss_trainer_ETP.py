@@ -42,6 +42,7 @@ from vlnce_baselines.common.parallel_utils import (
     filter_batch_distribution_rows,
     filter_batch_tensor_rows,
     positions_to_tensor,
+    resolve_global_sap_head,
     shard_sequence_by_rank,
 )
 from vlnce_baselines.common.utils import extract_instruction_tokens
@@ -274,11 +275,17 @@ class RLTrainer(BaseVLNCETrainer):
         if self.world_size <= 1 or not getattr(self.config.IL, "main_equiv_training", False):
             return
 
-        policy_net = self.policy.net
-        if hasattr(policy_net, "module"):
-            policy_net = policy_net.module
+        adaptive_head = resolve_global_sap_head(self.policy.net)
+        if adaptive_head is None:
+            if self.local_rank == 0 and not getattr(self, "_missing_global_sap_head_warned", False):
+                logger.warning(
+                    "Skipping main-equivalent adaptive-head sync because no global_sap_head "
+                    "was found on the active policy network."
+                )
+                self._missing_global_sap_head_warned = True
+            return
 
-        adaptive_head = policy_net.global_sap_head.net[4]
+        adaptive_head = adaptive_head.net[4]
         for tensor in (adaptive_head.weight.data, adaptive_head.bias.data):
             distr.all_reduce(tensor, op=distr.ReduceOp.SUM)
             tensor.div_(self.world_size)

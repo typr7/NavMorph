@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 try:
     import numpy as np
@@ -45,6 +45,33 @@ def normalize_gpu_id_list(
     if isinstance(gpu_ids, (list, tuple)):
         return list(gpu_ids)
     return [int(gpu_ids)]
+
+
+def unwrap_data_parallel_module(module: object) -> object:
+    while hasattr(module, "module"):
+        module = getattr(module, "module")
+    return module
+
+
+def _resolve_attr_path(root: object, path: Tuple[str, ...]) -> Optional[object]:
+    current = root
+    for attr in path:
+        if not hasattr(current, attr):
+            return None
+        current = getattr(current, attr)
+    return current
+
+
+def resolve_global_sap_head(module: object) -> Optional[object]:
+    root = unwrap_data_parallel_module(module)
+    for path in (
+        ("global_sap_head",),
+        ("vln_bert", "global_sap_head"),
+    ):
+        candidate = _resolve_attr_path(root, path)
+        if candidate is not None:
+            return unwrap_data_parallel_module(candidate)
+    return None
 
 
 def shard_sequence_by_rank(
