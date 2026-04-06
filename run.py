@@ -87,7 +87,7 @@ def run_exp(exp_name: str, exp_config: str,
     config.LOG_FILE = exp_name + '_' + config.LOG_FILE
 
     if 'CMA' in config.MODEL.policy_name and 'r2r' in config.BASE_TASK_CONFIG_PATH:
-        config.TASK_CONFIG.DATASET.DATA_PATH = 'data/datasets/R2R_VLNCE_v1-2_preprocessed/{split}/{split}.json.gz'
+        config.TASK_CONFIG.DATASET.DATA_PATH = '/data/data1/wzh/NavMorph/data/datasets/R2R_VLNCE_v1-2_preprocessed/{split}/{split}.json.gz'
 
     config.local_rank = local_rank
 

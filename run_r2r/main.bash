@@ -30,8 +30,8 @@ flag2=" --exp_name release_r2r
       GPU_NUMBERS 1
       NUM_ENVIRONMENTS 1
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      EVAL.CKPT_PATH_DIR data/checkpoints/ckpt.pth
-	  MODEL.pretrained_path pretrained/model_step_100000.pt
+      EVAL.CKPT_PATH_DIR /data/data1/wzh/NavMorph/data/checkpoints/ckpt.pth
+      MODEL.pretrained_path /data/data1/wzh/NavMorph/pretrained/model_step_100000.pt
       IL.back_algo control
       "
 
@@ -43,9 +43,9 @@ flag3="--exp_name release_r2r
       GPU_NUMBERS 1
       NUM_ENVIRONMENTS 1
       TASK_CONFIG.SIMULATOR.HABITAT_SIM_V0.ALLOW_SLIDING True
-      INFERENCE.CKPT_PATH data/checkpoints/ckpt.pth
+      INFERENCE.CKPT_PATH /data/data1/wzh/NavMorph/data/checkpoints/ckpt.pth
       INFERENCE.PREDICTIONS_FILE preds.json
-	  MODEL.pretrained_path pretrained/model_step_100000.pt
+      MODEL.pretrained_path /data/data1/wzh/NavMorph/pretrained/model_step_100000.pt
       IL.back_algo control
       "
 
@@ -53,15 +53,15 @@ mode=$1
 case $mode in 
       train)
       echo "###### train mode ######"
-      CUDA_VISIBLE_DEVICES='7' python run.py $flag1
+      CUDA_VISIBLE_DEVICES=1 python run.py $flag1
       ;;
       eval)
       echo "###### eval mode ######"
       #CUDA_VISIBLE_DEVICES='5' python -m pdb run.py $flag2
-      CUDA_VISIBLE_DEVICES='0' python run.py $flag2
+      CUDA_VISIBLE_DEVICES=1 python run.py $flag2
       ;;
       infer)
       echo "###### infer mode ######"
-      CUDA_VISIBLE_DEVICES='7' python run.py $flag3
+      CUDA_VISIBLE_DEVICES=1 python run.py $flag3
       ;;
 esac
