@@ -1,8 +1,9 @@
 # Branch Status: `navmorph-multi-env-multi-gpu`
 
-- Last updated: 2026-04-04
+- Last updated: 2026-04-06
+- Status: FAILED
 - Branch: `navmorph-multi-env-multi-gpu`
-- HEAD: `ebc2194a469fee571e6d80caaf0a9d28aecbf5c5`
+- HEAD: `e61396fe3e25b4b7ae6f019ab10035cc0d22cfca`
 - Remote branch: `typr7/navmorph-multi-env-multi-gpu`
 
 ## Goal
@@ -11,15 +12,17 @@ Enable NavMorph train / eval to run with multiple environments and multiple GPUs
 
 ## Current Status
 
-- Multi-environment eval startup now passes with `GPU_NUMBERS=1` and `NUM_ENVIRONMENTS=4`.
-- The earlier multi-environment crashes in rollout, graph feature construction, and navigation head indexing have been fixed on this branch.
-- Final policy checkpoint loading is clean:
-  - `model keys: 1674`
-  - `checkpoint keys: 1674`
-  - `missing: 0`
-  - `unexpected: 0`
-- This means the current eval checkpoint fully covers the current model definition.
-- Full end-to-end eval metrics have not yet been reviewed in this status note.
+- This branch is marked as failed for its main objective.
+- `GPU_NUMBERS=1` and `NUM_ENVIRONMENTS=1` training can run.
+- The target line of work was multi-GPU / multi-env training close to `main` semantics.
+- Repeated multi-GPU training tests still exposed new blocking failures:
+  - stale unpublished checkpoint defaults
+  - adaptive-head sync path errors
+  - DDP reducer conflicts
+  - segmentation checkpoint prefix mismatch
+  - repeated NaN failures on the navigation path
+- Several source-level numeric fixes were added, but this line has not reached a reliable multi-GPU training state.
+- The branch should be treated as an unsuccessful exploration branch, not as a stable training branch.
 
 ## Key Branch Changes
 
@@ -47,19 +50,55 @@ Relevant commits:
 - `ebc2194` — Log checkpoint coverage for strict-false loads
   - Added explicit coverage logs for auxiliary checkpoints and the final policy checkpoint.
 
+- `ee326d6` — Improve training parity with main
+  - Added rank sharding, global action-count normalization, and adaptive-head sync logic.
+
+- `93ef889` — Remove stale default training checkpoint
+  - Stopped defaulting train resume to a nonexistent `ckpt.iter25000.pth`.
+
+- `25fc936` — Fix multi-GPU adaptive head sync
+  - Corrected the adaptive-head lookup path under the ETP wrapper.
+
+- `f89cb60` — Avoid DDP reducer conflicts in multi-GPU training
+  - Replaced policy DDP usage with manual gradient synchronization.
+
+- `764cf56` — Fix segmentation checkpoint key prefixes
+  - Normalized `module.` prefixes when loading `segm.pt`.
+
+- `b59b39e` — Fix NaNs in NeRF feature normalization
+  - Clamped the NeRF feature norm to avoid zero-division NaNs.
+
+- `e61396f` — Clamp viewpoint angle ratios to prevent NaNs
+  - Clipped `arcsin` inputs in viewpoint-relative angle features.
+
 ## What Has Been Verified
 
 - The branch can initialize multi-env eval with 4 environments on one process.
 - Dataset / simulator / task initialization matches the requested multi-env setting.
 - Policy setup completes successfully.
 - The final eval checkpoint matches the current model exactly.
+- Single-GPU training with `GPU_NUMBERS=1`, `NUM_ENVIRONMENTS=1`, `IL_BATCH_SIZE=1` can start.
 
 ## What Still Needs Verification
 
-- Full eval completion on `val_unseen`
-- Final metrics sanity check
-- Multi-GPU execution with `GPU_NUMBERS > 1`
-- Agreement between single-env and multi-env eval outputs
+- Reliable multi-GPU training execution with `GPU_NUMBERS > 1`
+- Agreement between single-GPU and multi-GPU training behavior
+- Full end-to-end training stability after long runs
+- Final eval completion and metrics sanity check
+
+## Failure Decision
+
+- Decision: stop this line as a failed branch.
+- Reason:
+  - the branch accumulated too many coupled fixes without reaching stable multi-GPU training
+  - repeated testing kept surfacing new blockers after earlier blockers were fixed
+  - the implementation no longer looks like a low-risk path to “multi-GPU training equivalent to `main`”
+- Recommended follow-up:
+  - keep this branch only as a record of attempted fixes
+  - start a cleaner replacement branch from `main`
+  - limit the next attempt to one narrower target, for example:
+    - only single-env multi-GPU training
+    - or only multi-env eval
 
 ## Known Caveats
 
@@ -93,4 +132,4 @@ bash run_r2r/main.bash eval
 
 ## Recommended Next Step
 
-Run a full eval to completion and save the final metrics beside this status note.
+Do not continue development on this branch. Start a fresh replacement branch from `main`.
