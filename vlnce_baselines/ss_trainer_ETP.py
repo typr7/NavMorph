@@ -44,7 +44,11 @@ from .utils import get_camera_orientations12
 from .utils import (
     length2mask, dir_angle_feature_with_ele,
 )
-from vlnce_baselines.common.utils import dis_to_con, gather_list_and_concat
+from vlnce_baselines.common.utils import (
+    align_tensors_to_device,
+    dis_to_con,
+    gather_list_and_concat,
+)
 from habitat_extensions.measures import NDTW, StepsTaken
 from fastdtw import fastdtw
 
@@ -1375,7 +1379,9 @@ class RLTrainer(BaseVLNCETrainer):
                 real_obser_tensor = torch.stack(real_obser_seq, dim=0)   # (T, D)
 
 
-            pred_cur_position = new_position.unsqueeze(0) + wm_outputs.to('cpu') # 
+            pred_cur_position = new_position.unsqueeze(0) + align_tensors_to_device(
+                new_position, wm_outputs
+            )
             pred_cur_position = pred_cur_position.squeeze(0)
 
             posterior = {
@@ -1427,12 +1433,12 @@ class RLTrainer(BaseVLNCETrainer):
                     gt_path_1 = np.array(self.gt_data[str(ep_id)]['locations']).astype(np.float)
                     # find the nearest real point
                  
-                    gt_path_tensor = torch.from_numpy(gt_path_1)  # 
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    
-                    gt_path_tensor = gt_path_tensor.to(device)  #
+                    device = new_position.device
+                    gt_path_tensor = torch.from_numpy(gt_path_1).to(
+                        device=device, dtype=new_position.dtype
+                    )
+
                     current_coord = new_position.unsqueeze(0)
-                    current_coord = current_coord.to(device)
                     nearest_coord, nearest_index, distance = self.find_nearest_coord_torch(current_coord, gt_path_tensor) # Find the nearest ground truth coordinate to the predicted current position
 		    # This ensures the predicted next location aligns with the true trajectory to avoid drifting off-path.
 
@@ -1491,7 +1497,9 @@ class RLTrainer(BaseVLNCETrainer):
 
 
                         # ---------------- Position rollout ----------------
-                        cur_position = new_position.unsqueeze(0) + imagine_outputs
+                        cur_position = new_position.unsqueeze(0) + align_tensors_to_device(
+                            new_position, imagine_outputs
+                        )
                         cur_position = cur_position.squeeze(0)
 
                         if nearest_coord is not None:

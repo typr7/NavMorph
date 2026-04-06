@@ -34,6 +34,23 @@ def extract_instruction_tokens(
             break
     return observations
 
+
+def align_tensors_to_device(reference_tensor: torch.Tensor, *tensors):
+    aligned_tensors = []
+    for tensor in tensors:
+        if tensor is None:
+            aligned_tensors.append(None)
+        elif torch.is_tensor(tensor):
+            aligned_tensors.append(tensor.to(reference_tensor.device))
+        else:
+            raise TypeError(
+                f"Expected torch.Tensor or None, got {type(tensor).__name__}"
+            )
+
+    if len(aligned_tensors) == 1:
+        return aligned_tensors[0]
+    return tuple(aligned_tensors)
+
 def gather_list_and_concat(list_of_nums,world_size):
     if not torch.is_tensor(list_of_nums):
         tensor = torch.Tensor(list_of_nums).cuda()
